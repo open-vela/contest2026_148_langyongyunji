@@ -3,8 +3,60 @@
 # see the file kconfig-language.txt in the NuttX tools repository.
 #
 
-config LVX_USE_DEMO_CONTEST2026_000_HELLO_APP
-	bool "Contest 2026 team 000 hello app"
+menuconfig LVX_USE_DEMO_CONTEST2026_148_VELAGUARD
+	bool "Contest 2026 team 148 VelaGuard"
 	default n
+	depends on GRAPHICS_LVGL && LV_USE_NUTTX
 	---help---
-		Enable the contest 2026 team 000 hello app demo.
+		Enable VelaGuard, an openvela-based end-side safety guardian
+		prototype for the Huangshan Pi SF32LB52 board. It provides an
+		LVGL UI, a safety-event state machine, demo fall/voice/sound/SOS
+		triggers, rule-based event summaries, and JSON event output on
+		the UART console.
+
+if LVX_USE_DEMO_CONTEST2026_148_VELAGUARD
+
+config CONTEST2026_148_VELAGUARD_PRIORITY
+	int "VelaGuard task priority"
+	default 100
+
+config CONTEST2026_148_VELAGUARD_STACKSIZE
+	int "VelaGuard stack size"
+	default 32768
+
+config CONTEST2026_148_VELAGUARD_INPUT_DEVPATH
+	string "Touchscreen device path"
+	default "/dev/input0"
+	depends on INPUT_TOUCHSCREEN
+
+config CONTEST2026_148_VELAGUARD_BUTTON_DEVPATH
+	string "Button device path"
+	default "/dev/buttons"
+	depends on INPUT_BUTTONS
+
+config CONTEST2026_148_VELAGUARD_IMU_DEVPATH
+	string "IMU I2C device path"
+	default "/dev/i2c0"
+	depends on I2C_DRIVER
+
+config CONTEST2026_148_VELAGUARD_COUNTDOWN
+	int "Pre-alert countdown in seconds"
+	default 10
+
+config CONTEST2026_148_VELAGUARD_HISTORY_SIZE
+	int "Number of events kept in memory"
+	default 5
+	range 1 8
+
+config CONTEST2026_148_VELAGUARD_INPUT_POLL_MS
+	int "Touch input polling period in milliseconds"
+	default 16
+	range 5 100
+	depends on INPUT_TOUCHSCREEN
+
+config CONTEST2026_148_VELAGUARD_LOOP_SLEEP_MAX_MS
+	int "Maximum sleep time of the LVGL main loop in milliseconds"
+	default 8
+	range 1 33
+
+endif # LVX_USE_DEMO_CONTEST2026_148_VELAGUARD

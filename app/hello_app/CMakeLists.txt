@@ -1,7 +1,36 @@
-# Contest 2026 team 000 hello app
-if(CONFIG_LVX_USE_DEMO_CONTEST2026_000_HELLO_APP)
+# Contest 2026 team 148 - VelaGuard
+
+if(CONFIG_LVX_USE_DEMO_CONTEST2026_148_VELAGUARD)
   nuttx_add_application(
-    NAME hello_app
-    SRCS hello_app_main.c
-    STACKSIZE 2048)
+    NAME
+    velaguard
+    PRIORITY
+    ${CONFIG_CONTEST2026_148_VELAGUARD_PRIORITY}
+    STACKSIZE
+    ${CONFIG_CONTEST2026_148_VELAGUARD_STACKSIZE}
+    MODULE
+    ${CONFIG_LVX_USE_DEMO_CONTEST2026_148_VELAGUARD}
+    DEPENDS
+    lvgl
+    DEFINITIONS
+    SOC_BF0_HCPU
+    INCLUDE_DIRECTORIES
+    ${NUTTX_BOARD_DIR}/src
+    ${NUTTX_BOARD_DIR}/include
+    ${NUTTX_DIR}/../vendor/sifli/chips/drivers/Include
+    ${NUTTX_DIR}/../vendor/sifli/chips/drivers/cmsis/Include
+    ${NUTTX_DIR}/../vendor/sifli/chips/drivers/cmsis/sf32lb52x
+    ${NUTTX_DIR}/../vendor/sifli/chips/external/CMSIS/Include
+    ${NUTTX_DIR}/../vendor/sifli/chips/sf32lb52
+    ${NUTTX_DIR}/../vendor/sifli/chips/sf32lb52/include
+    ${NUTTX_DIR}/../vendor/sifli/chips/boards/include
+    core
+    algorithm
+    sensors
+    ui
+    SRCS
+    core/velaguard_main.c
+    algorithm/velaguard_fall.c
+    sensors/velaguard_imu.c
+    ui/velaguard_font_18.c)
 endif()
