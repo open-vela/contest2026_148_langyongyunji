@@ -1,5 +1,7 @@
 #
-# Contest 2026 team 000 board placeholder
+# VelaGuard configuration holder.  The official SiFli BSP is selected from
+# configs/nsh/defconfig, so this template symbol is not enabled for the
+# Huangshan Pi build.
 #
 
 if ARCH_BOARD_CONTEST2026_000_BOARD

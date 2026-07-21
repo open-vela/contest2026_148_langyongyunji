@@ -17,6 +17,29 @@ velaguard --fall-watch 30
 
 界面使用 `ui/velaguard_font_18.c` 专用小字库，避免 LVGL 默认字体缺少中文字符。
 
+## 团队构建
+
+比赛仓只保存 VelaGuard 作品代码，必须在完整的 openvela 工作区构建，不能只
+单独克隆本比赛仓。先按比赛仓 manifest 同步完整工程，再从 openvela 根目录运行：
+
+```sh
+export PYTHONPATH="$PWD/prebuilts/tools/python/dist-packages/pyelftools:$PWD/prebuilts/tools/python/dist-packages/cxxfilt:$PYTHONPATH"
+export PATH="$PWD/prebuilts/tools/linux/x86_64:$PATH"
+
+cmake -B cmake_out/velaguard_huangshan -S "$PWD/nuttx" -GNinja \
+  -DBOARD_CONFIG=../vendor/openvela/boards/contest2026_148_board/configs/nsh \
+  -DEXTRA_FLAGS="-Wno-cpp -Wno-deprecated-declarations"
+
+cmake --build cmake_out/velaguard_huangshan
+```
+
+这里的 `BOARD_CONFIG` 位于本队比赛仓，它复用官方
+`vendor/sifli/boards/sf32lb52/lckfb_huangshan_pi` BSP，并启用 VelaGuard。
+不要使用官方 BSP 目录中的 `configs/nsh` 作为 VelaGuard 构建配置，因为那会让
+本队应用开关依赖未提交的本地修改。
+
+构建产物：`cmake_out/velaguard_huangshan/nuttx.bin`。
+
 ## 目录结构
 
 ```text
