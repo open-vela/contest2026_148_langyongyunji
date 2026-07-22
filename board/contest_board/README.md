@@ -33,5 +33,12 @@ cmake --build cmake_out/velaguard_huangshan
 产物为 `cmake_out/velaguard_huangshan/nuttx.bin`。
 
 `src/board_boot.c` 仍是比赛模板留下的占位示例；当前构建不会使用它。
+
+新增文件：
+- `src/aw8155.h` / `src/aw8155.c` — AW8155 音频功放 GPIO 开关控制（PA42）
+  - 不依赖 vendor/sifli 任何修改，独立编译入 `board` 库
+  - 首次调用 `aw8155_pa_on/off` 时自动初始化 GPIO（懒加载）
+  - 用户在定时任务回调或音频事件中 import 本驱动头文件即可使用
+
 要修改官方黄山派 BSP 本身，需要单独向 `vendor_sifli` 提交补丁或 PR，不能把
 这类改动藏在 VelaGuard 应用提交里。
