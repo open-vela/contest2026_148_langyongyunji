@@ -1,0 +1,10 @@
+<script>
+export default {
+  onCreate() {
+    console.log('[langyongyunji] app created')
+  },
+  onDestroy() {
+    console.log('[langyongyunji] app destroyed')
+  }
+}
+</script>
