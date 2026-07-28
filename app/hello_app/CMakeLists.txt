@@ -14,6 +14,7 @@ if(CONFIG_LVX_USE_DEMO_CONTEST2026_148_VELAGUARD)
     lvgl
     DEFINITIONS
     SOC_BF0_HCPU
+    SF32LB52X
     INCLUDE_DIRECTORIES
     ${NUTTX_BOARD_DIR}/src
     ${NUTTX_BOARD_DIR}/include
@@ -24,13 +25,37 @@ if(CONFIG_LVX_USE_DEMO_CONTEST2026_148_VELAGUARD)
     ${NUTTX_DIR}/../vendor/sifli/chips/sf32lb52
     ${NUTTX_DIR}/../vendor/sifli/chips/sf32lb52/include
     ${NUTTX_DIR}/../vendor/sifli/chips/boards/include
+    ${NUTTX_DIR}/../apps/external/zblue/zblue/port/include
+    ${NUTTX_DIR}/../apps/external/zblue/zblue/port/kernel/include
+    ${CMAKE_BINARY_DIR}/apps/external/zblue/include
+    ${CMAKE_BINARY_DIR}/apps/external/zblue/include/zephyr/sys
+    ${CMAKE_BINARY_DIR}/apps/external/zblue/include/zephyr/kernel
+    ${CMAKE_BINARY_DIR}/apps/external/zblue/include/zephyr/arch
+    ${CMAKE_BINARY_DIR}/apps/external/zblue/include/zephyr/linker
+    ${CMAKE_BINARY_DIR}/apps/external/zblue/include/zephyr/devicetree
+    ${CMAKE_BINARY_DIR}/apps/external/zblue/include/zephyr/debug
+    ${CMAKE_BINARY_DIR}/apps/external/zblue/include/zephyr/fs
+    ${CMAKE_BINARY_DIR}/apps/external/zblue/include/zephyr/shell
+    ${CMAKE_BINARY_DIR}/apps/external/zblue/include/zephyr/tracing
+    ${CMAKE_BINARY_DIR}/apps/external/zblue/include/zephyr/app_memory
+    ${NUTTX_DIR}/../apps/external/zblue/zblue/include
+    ${NUTTX_DIR}/arch/arm/src/common
+    ${NUTTX_DIR}/arch/arm/src/armv8-m
+    ${NUTTX_DIR}/arch/arm/src/arm_m
+    ${NUTTX_DIR}/sched
     core
     algorithm
+    audio
     sensors
+    comm
     ui
     SRCS
     core/velaguard_main.c
+    core/velaguard_boot.c
     algorithm/velaguard_fall.c
+    audio/velaguard_audio.c
     sensors/velaguard_imu.c
+    comm/velaguard_ble.c
+    ${NUTTX_DIR}/../apps/external/zblue/zblue/port/drivers/bluetooth/hci/h4.c
     ui/velaguard_font_18.c)
 endif()

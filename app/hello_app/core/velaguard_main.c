@@ -10,6 +10,7 @@
  ****************************************************************************/
 
 #include <nuttx/config.h>
+#include <nuttx/sched.h>
 
 #include <sys/boardctl.h>
 #include <sys/types.h>
@@ -33,6 +34,8 @@
 
 #include "velaguard_fall.h"
 #include "velaguard_imu.h"
+#include "velaguard_ble.h"
+#include "velaguard_audio.h"
 
 LV_FONT_DECLARE(velaguard_font_18);
 
@@ -91,6 +94,11 @@ LV_FONT_DECLARE(velaguard_font_18);
 #define VG_COLOR_INFO        0x3d8bfd
 #define VG_TICK_PERIOD_MS    250
 #define VG_IMU_UI_PERIOD_MS  100
+#define VG_SOS_BUTTON_BIT    ((btn_buttonset_t)1 << 0) /* PA43 / KEY2 */
+#define VG_DEVICE_WAIT_STEP_MS 100
+#define VG_DEVICE_WAIT_MS      5000
+#define VG_VOICE_REARM_MS       3000
+#define VG_BLE_INIT_STACKSIZE   16384
 
 /****************************************************************************
  * Private Types
@@ -161,6 +169,12 @@ struct vg_app_s
   int imu_mag_mg;
   int imu_gyro_dps;
   int imu_last_error;
+  struct vg_audio_level_s audio_level;
+  enum vg_audio_keyword_e audio_keyword;
+  uint32_t audio_sequence;
+  uint32_t audio_report_tick;
+  uint64_t voice_last_trigger_ms;
+  bool audio_ready;
   uint32_t next_id;
   bool has_fall_result;
   bool imu_ready;
@@ -190,12 +204,21 @@ static void vg_render_current(void);
 static void vg_set_font(lv_obj_t *obj);
 static void vg_trigger_fall_result(const struct vg_fall_result_s *result);
 static void vg_update_imu_labels(void);
+static void vg_audio_process(void);
+static int vg_ble_init_task(int argc, char *argv[]);
 
 /****************************************************************************
  * Private Data
  ****************************************************************************/
 
 static struct vg_app_s g_vg;
+
+static int vg_ble_init_task(int argc, char *argv[])
+{
+  UNUSED(argc);
+  UNUSED(argv);
+  return vg_ble_init();
+}
 
 /****************************************************************************
  * Private Functions
@@ -390,6 +413,8 @@ static void vg_prepare_event(enum vg_event_type_e type, int risk,
 
 static void vg_confirm_alert(void)
 {
+  uint8_t ble_type;
+
   if (g_vg.state == VG_STATE_ALERTING)
     {
       return;
@@ -400,6 +425,13 @@ static void vg_confirm_alert(void)
   vg_make_summary(&g_vg.active, "alert");
   vg_history_push(&g_vg.active);
   vg_emit_json(&g_vg.active);
+
+  ble_type = g_vg.active.type == VG_EVENT_FALL ? VG_BLE_EVENT_FALL :
+             g_vg.active.type == VG_EVENT_VOICE ? VG_BLE_EVENT_VOICE_SOS :
+             VG_BLE_EVENT_MANUAL_SOS;
+  vg_ble_request_call(ble_type, g_vg.active.risk,
+                      g_vg.active.confidence, g_vg.active.id,
+                      (uint32_t)g_vg.active.timestamp_ms, true);
   vg_render_alert();
 }
 
@@ -410,12 +442,18 @@ static void vg_trigger_event(enum vg_event_type_e type)
 
   g_vg.has_fall_result = false;
 
-  if (type == VG_EVENT_MANUAL_SOS)
+  if (type == VG_EVENT_MANUAL_SOS || type == VG_EVENT_VOICE)
     {
-      vg_prepare_event(type, 4, 100, "alert");
+      vg_prepare_event(type, 4,
+                       type == VG_EVENT_MANUAL_SOS ? 100 : 92, "alert");
       g_vg.state = VG_STATE_ALERTING;
       vg_history_push(&g_vg.active);
       vg_emit_json(&g_vg.active);
+      vg_ble_request_call(type == VG_EVENT_VOICE ?
+                          VG_BLE_EVENT_VOICE_SOS :
+                          VG_BLE_EVENT_MANUAL_SOS, g_vg.active.risk,
+                          g_vg.active.confidence, g_vg.active.id,
+                          (uint32_t)g_vg.active.timestamp_ms, true);
       vg_render_alert();
       return;
     }
@@ -424,11 +462,6 @@ static void vg_trigger_event(enum vg_event_type_e type)
     {
       confidence = 76;
     }
-  else if (type == VG_EVENT_VOICE)
-    {
-      confidence = 92;
-    }
-
   vg_prepare_event(type, risk, confidence, "suspected");
   g_vg.state = VG_STATE_PREALERT;
   g_vg.countdown = CONFIG_CONTEST2026_148_VELAGUARD_COUNTDOWN;
@@ -588,6 +621,7 @@ static void vg_action_cb(lv_event_t *event)
     }
 
   action = (enum vg_action_e)(uintptr_t)lv_event_get_user_data(event);
+  printf("VelaGuard UI: click action=%d\n", (int)action);
 
   switch (action)
     {
@@ -999,6 +1033,12 @@ static void vg_imu_timer_cb(lv_timer_t *timer)
       return;
     }
 
+  /* Touch and IMU share I2C1 and require different pin groups.  Keep this
+   * access in LVGL's thread so the input read timer can never run while the
+   * IMU pin group is selected.  The guarded switch is kept short (about
+   * 1.5 ms total), so this serialization no longer causes visible UI lag.
+   */
+
   ret = vg_imu_read_guarded(&g_vg.imu, &imu_sample);
   if (ret < 0)
     {
@@ -1051,11 +1091,12 @@ static void vg_buttons_poll(void)
       return;
     }
 
-  if ((sample & 0x01) && !(g_vg.last_buttons & 0x01))
-    {
-      vg_trigger_event(VG_EVENT_FALL);
-    }
-  else if ((sample & 0x02) && !(g_vg.last_buttons & 0x02))
+  /* The Huangshan Pi BSP exposes PA43/KEY2 as the only application button.
+   * Treat its rising edge as a real manual SOS, never as a demo fall.
+   */
+
+  if ((sample & VG_SOS_BUTTON_BIT) &&
+      !(g_vg.last_buttons & VG_SOS_BUTTON_BIT))
     {
       vg_trigger_event(VG_EVENT_MANUAL_SOS);
     }
@@ -1105,6 +1146,93 @@ static void vg_tick_cb(lv_timer_t *timer)
     }
 }
 
+static void vg_audio_process(void)
+{
+  uint64_t now;
+
+  if (!g_vg.audio_ready ||
+      !vg_audio_capture_level(&g_vg.audio_level, &g_vg.audio_sequence,
+                              &g_vg.audio_keyword))
+    {
+      return;
+    }
+
+  now = vg_uptime_ms();
+  g_vg.audio_report_tick += 32;
+  if (g_vg.audio_report_tick >= 1000)
+    {
+      printf("VelaGuard MIC: seq=%lu dc=%ld mean=%lu peak=%u voice=%d\n",
+             (unsigned long)g_vg.audio_sequence,
+             (long)g_vg.audio_level.dc,
+             (unsigned long)g_vg.audio_level.mean_abs,
+             g_vg.audio_level.peak,
+             g_vg.audio_level.speech_active ? 1 : 0);
+      g_vg.audio_report_tick = 0;
+    }
+
+  if (g_vg.audio_keyword != VG_AUDIO_KEYWORD_NONE &&
+      g_vg.state == VG_STATE_GUARDING &&
+      (g_vg.voice_last_trigger_ms == 0 ||
+       now - g_vg.voice_last_trigger_ms >= VG_VOICE_REARM_MS))
+    {
+      g_vg.voice_last_trigger_ms = now;
+      printf("VelaGuard KWS: keyword=%s recognized\n",
+             g_vg.audio_keyword == VG_AUDIO_KEYWORD_JIUMING ?
+             "救命" : "求助");
+      vg_trigger_event(VG_EVENT_VOICE);
+    }
+}
+
+static int vg_wait_for_device(const char *path, unsigned int timeout_ms)
+{
+  unsigned int waited_ms = 0;
+
+  while (access(path, F_OK) < 0)
+    {
+      if (waited_ms >= timeout_ms)
+        {
+          printf("VelaGuard: timeout waiting for %s\n", path);
+          return -ETIMEDOUT;
+        }
+
+      usleep(VG_DEVICE_WAIT_STEP_MS * 1000);
+      waited_ms += VG_DEVICE_WAIT_STEP_MS;
+    }
+
+  printf("VelaGuard: device ready %s after %u ms\n", path, waited_ms);
+  return 0;
+}
+
+static void vg_audio_headless_loop(void)
+{
+  unsigned int report_ms = 0;
+
+  printf("VelaGuard: UI unavailable; audio diagnostics remain active.\n");
+  for (; ; )
+    {
+      vg_ble_process();
+
+      if (g_vg.audio_ready &&
+          vg_audio_capture_level(&g_vg.audio_level, &g_vg.audio_sequence,
+                                 NULL))
+        {
+          report_ms += VG_DEVICE_WAIT_STEP_MS;
+          if (report_ms >= 1000)
+            {
+              printf("VelaGuard MIC: seq=%lu dc=%ld mean=%lu peak=%u voice=%d\n",
+                     (unsigned long)g_vg.audio_sequence,
+                     (long)g_vg.audio_level.dc,
+                     (unsigned long)g_vg.audio_level.mean_abs,
+                     g_vg.audio_level.peak,
+                     g_vg.audio_level.speech_active ? 1 : 0);
+              report_ms = 0;
+            }
+        }
+
+      usleep(VG_DEVICE_WAIT_STEP_MS * 1000);
+    }
+}
+
 static enum vg_event_type_e vg_parse_demo_type(const char *arg)
 {
   if (strcmp(arg, "fall") == 0)
@@ -1147,6 +1275,7 @@ int main(int argc, FAR char *argv[])
   bool imu_scan = false;
   bool imu_test = false;
   bool fall_watch = false;
+  bool input_ready = false;
   enum vg_event_type_e initial_event = VG_EVENT_FALL;
   int imu_samples = 30;
   int fall_watch_seconds = 30;
@@ -1236,6 +1365,35 @@ int main(int argc, FAR char *argv[])
   boardctl(BOARDIOC_INIT, 0);
 #endif
 
+  /* Capture must remain available even when display or Bluetooth bring-up
+   * is delayed.  In particular, the Huangshan Pi initializes its LCD from
+   * an asynchronous board task.
+   */
+
+  if (vg_audio_capture_start() == 0)
+    {
+      g_vg.audio_ready = true;
+    }
+  else
+    {
+      printf("VelaGuard audio: microphone capture unavailable\n");
+    }
+
+#ifdef CONFIG_LV_USE_NUTTX_LCD
+  vg_wait_for_device("/dev/lcd0", VG_DEVICE_WAIT_MS);
+#endif
+
+#ifdef CONFIG_INPUT_TOUCHSCREEN
+  /* Board bring-up registers FT6146 asynchronously.  lv_nuttx_init() only
+   * attempts to open input_path once, so starting LVGL before /dev/input0
+   * exists leaves the UI permanently without an input device.
+   */
+
+  input_ready = vg_wait_for_device(
+    CONFIG_CONTEST2026_148_VELAGUARD_INPUT_DEVPATH,
+    VG_DEVICE_WAIT_MS) == 0;
+#endif
+
   lv_init();
   lv_nuttx_dsc_init(&info);
 
@@ -1244,7 +1402,10 @@ int main(int argc, FAR char *argv[])
 #endif
 
 #ifdef CONFIG_INPUT_TOUCHSCREEN
-  info.input_path = CONFIG_CONTEST2026_148_VELAGUARD_INPUT_DEVPATH;
+  if (input_ready)
+    {
+      info.input_path = CONFIG_CONTEST2026_148_VELAGUARD_INPUT_DEVPATH;
+    }
 #endif
 
   lv_nuttx_init(&info, &result);
@@ -1252,6 +1413,7 @@ int main(int argc, FAR char *argv[])
     {
       printf("VelaGuard: LVGL NuttX display initialization failed.\n");
       lv_deinit();
+      vg_audio_headless_loop();
       return 1;
     }
 
@@ -1264,6 +1426,10 @@ int main(int argc, FAR char *argv[])
           lv_timer_set_period(read_timer,
                               CONFIG_CONTEST2026_148_VELAGUARD_INPUT_POLL_MS);
         }
+    }
+  else
+    {
+      printf("VelaGuard: LVGL touch input initialization failed\n");
     }
 
 #ifdef CONFIG_INPUT_BUTTONS
@@ -1279,6 +1445,17 @@ int main(int argc, FAR char *argv[])
   g_vg.imu_timer = lv_timer_create(vg_imu_timer_cb, VG_IMU_UI_PERIOD_MS,
                                    NULL);
 
+  /* Bluetooth controller bring-up may block or assert on an HCI timeout.
+   * Start it only after the first UI is built and isolate it in a separate
+   * task so display, touch and local safety functions remain available.
+   */
+
+  if (task_create("vg_ble", CONFIG_CONTEST2026_148_VELAGUARD_PRIORITY,
+                  VG_BLE_INIT_STACKSIZE, vg_ble_init_task, NULL) < 0)
+    {
+      printf("VelaGuard BLE: init task start failed: %d\n", errno);
+    }
+
   if (has_initial_event)
     {
       vg_trigger_event(initial_event);
@@ -1286,6 +1463,9 @@ int main(int argc, FAR char *argv[])
 
   for (; ; )
     {
+      vg_ble_process();
+      vg_audio_process();
+
       uint32_t idle = lv_timer_handler();
       idle = idle ? idle : 1;
       if (idle > CONFIG_CONTEST2026_148_VELAGUARD_LOOP_SLEEP_MAX_MS)

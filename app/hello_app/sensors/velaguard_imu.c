@@ -43,6 +43,7 @@
 #define LSM6DS3_OUTX_L_G      0x22
 
 #define VG_IMU_FALL_PERIOD_MS 50
+#define VG_IMU_PIN_SETTLE_US  500
 
 /****************************************************************************
  * Private Function Prototypes
@@ -50,6 +51,8 @@
 
 extern void BSP_GPIO_Set(int pin, int val, int is_porta);
 extern void BSP_PIN_Touch(void);
+extern int sf32lb52_i2c1_mux_lock(void);
+extern int sf32lb52_i2c1_mux_unlock(void);
 
 /****************************************************************************
  * Private Functions
@@ -135,16 +138,16 @@ static void vg_imu_select_pins(void)
    */
 
   BSP_GPIO_Set(30, 1, 1);
-  usleep(10000);
+  usleep(VG_IMU_PIN_SETTLE_US);
   HAL_PIN_Set(PAD_PA40, I2C1_SCL, PIN_PULLUP, 1);
   HAL_PIN_Set(PAD_PA39, I2C1_SDA, PIN_PULLUP, 1);
-  usleep(10000);
+  usleep(VG_IMU_PIN_SETTLE_US);
 }
 
 static void vg_imu_restore_touch_pins(void)
 {
   BSP_PIN_Touch();
-  usleep(10000);
+  usleep(VG_IMU_PIN_SETTLE_US);
 }
 
 static int16_t vg_i16_le(const uint8_t *data)
@@ -309,9 +312,16 @@ int vg_imu_open_guarded(struct vg_imu_s *imu, const char *devpath)
 {
   int ret;
 
+  ret = sf32lb52_i2c1_mux_lock();
+  if (ret < 0)
+    {
+      return ret;
+    }
+
   vg_imu_select_pins();
   ret = vg_imu_open(imu, devpath);
   vg_imu_restore_touch_pins();
+  sf32lb52_i2c1_mux_unlock();
   return ret;
 }
 
@@ -365,9 +375,16 @@ int vg_imu_read_guarded(struct vg_imu_s *imu,
 {
   int ret;
 
+  ret = sf32lb52_i2c1_mux_lock();
+  if (ret < 0)
+    {
+      return ret;
+    }
+
   vg_imu_select_pins();
   ret = vg_imu_read(imu, sample);
   vg_imu_restore_touch_pins();
+  sf32lb52_i2c1_mux_unlock();
   return ret;
 }
 
