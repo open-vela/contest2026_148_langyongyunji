@@ -1,0 +1,46 @@
+diff --git a/chips/sf32lb52/CMakeLists.txt b/chips/sf32lb52/CMakeLists.txt
+index d0195d9..78cf5c6 100644
+--- a/chips/sf32lb52/CMakeLists.txt
++++ b/chips/sf32lb52/CMakeLists.txt
+@@ -50,6 +50,11 @@ if(CONFIG_SF32LB52_USBDEV)
+     list(APPEND SRCS sf32lb_usbdev.c)
+ endif()
+ 
++if(CONFIG_AUDIO)
++    list(APPEND SRCS sf32lb_audio.c)
++    list(APPEND HAL_SRCS ${NUTTX_CHIP_ABS_DIR}/../drivers/hal/bf0_hal_audcodec.c)
++endif()
++
+ set(IPC_QUEUE_SRCS
+     ${NUTTX_CHIP_ABS_DIR}/ipc_queue/common/circular_buf.c
+     ${NUTTX_CHIP_ABS_DIR}/ipc_queue/common/ipc_hw.c
+diff --git a/chips/sf32lb52/sf32lb_audio.h b/chips/sf32lb52/sf32lb_audio.h
+new file mode 100644
+index 0000000..1876345
+--- /dev/null
++++ b/chips/sf32lb52/sf32lb_audio.h
+@@ -0,0 +1,24 @@
++/*
++ * SPDX-FileCopyrightText: 2025 SiFli Technologies(Nanjing) Co., Ltd
++ *
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++#ifndef __VENDOR_SIFLI_SF32LB52_AUDIO_H
++#define __VENDOR_SIFLI_SF32LB52_AUDIO_H
++
++/****************************************************************************
++ * Public Function Prototypes
++ ****************************************************************************/
++
++/* Initialize the SF32LB52 internal audio codec and register the NuttX audio
++ * lower-half devices:
++ *   /dev/audio/pcm0p  - playback (mono, 16-bit, 16 kHz)
++ *   /dev/audio/pcm0c  - capture  (mono, 16-bit, 16 kHz)
++ *
++ * Returns 0 on success, negative errno on failure.
++ */
++
++int sf32lb_audio_initialize(void);
++
++#endif /* __VENDOR_SIFLI_SF32LB52_AUDIO_H */
