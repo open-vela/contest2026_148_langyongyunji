@@ -1,3 +1,4 @@
-# Contest 2026 team 000 board - src
-nuttx_add_library(board)
-target_sources(board PRIVATE board_boot.c aw8155.c)
+# Contest 2026 team 148 board - src
+#
+# Hardware drivers (aw8155, sf32lb audio) are now provided by the
+# NuttX audio lower-half driver in vendor/sifli patches.
