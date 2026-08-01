@@ -59,6 +59,7 @@ static int vg_audio_dma_isr(int irq, void *context, void *arg)
   return 0;
 }
 
+__attribute__((weak))
 void HAL_AUDCODEC_RxHalfCpltCallback(AUDCODEC_HandleTypeDef *codec, int cid)
 {
   if (codec == &g_vg_codec && cid == HAL_AUDCODEC_ADC_CH0)
@@ -68,6 +69,7 @@ void HAL_AUDCODEC_RxHalfCpltCallback(AUDCODEC_HandleTypeDef *codec, int cid)
     }
 }
 
+__attribute__((weak))
 void HAL_AUDCODEC_RxCpltCallback(AUDCODEC_HandleTypeDef *codec, int cid)
 {
   if (codec == &g_vg_codec && cid == HAL_AUDCODEC_ADC_CH0)
@@ -77,6 +79,7 @@ void HAL_AUDCODEC_RxCpltCallback(AUDCODEC_HandleTypeDef *codec, int cid)
     }
 }
 
+__attribute__((weak))
 void HAL_AUDCODEC_ErrorCallback(AUDCODEC_HandleTypeDef *codec, int cid)
 {
   if (codec == &g_vg_codec && cid == HAL_AUDCODEC_ADC_CH0)

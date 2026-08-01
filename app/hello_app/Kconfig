@@ -59,4 +59,14 @@ config CONTEST2026_148_VELAGUARD_LOOP_SLEEP_MAX_MS
 	default 8
 	range 1 33
 
+config CONTEST2026_148_AUDIO_TEST
+	bool "Audio test command (audio_test)"
+	default y
+	---help---
+		Enable the audio_test NSH command.  Runs at the NSH prompt:
+		  audio_test [duration_ms]
+		Initialises AUDCODEC PLL/DAC, enables AW8155 PA, plays a 1 kHz
+		test tone through the speaker, and prints key diagnostics to
+		the serial console.
+
 endif # LVX_USE_DEMO_CONTEST2026_148_VELAGUARD

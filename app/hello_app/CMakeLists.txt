@@ -1,4 +1,12 @@
 # Contest 2026 team 148 - VelaGuard
+#
+# NUTTX_BOARD_DIR is overwritten by the custom board dir (Huangshan Pi BSP)
+# when CONFIG_ARCH_BOARD_CUSTOM=y.  Contest-specific board sources live in
+# vendor/openvela/boards/contest2026_148_board/src/ and must be referenced
+# explicitly.
+
+set(CONTEST2026_148_BOARD_DIR
+    ${NUTTX_DIR}/../vendor/openvela/boards/contest2026_148_board)
 
 if(CONFIG_LVX_USE_DEMO_CONTEST2026_148_VELAGUARD)
   nuttx_add_application(
@@ -15,8 +23,8 @@ if(CONFIG_LVX_USE_DEMO_CONTEST2026_148_VELAGUARD)
     DEFINITIONS
     SOC_BF0_HCPU
     SF32LB52X
+    USE_HAL_DRIVER
     INCLUDE_DIRECTORIES
-    ${NUTTX_BOARD_DIR}/src
     ${NUTTX_BOARD_DIR}/include
     ${NUTTX_DIR}/../vendor/sifli/chips/drivers/Include
     ${NUTTX_DIR}/../vendor/sifli/chips/drivers/cmsis/Include
@@ -58,4 +66,18 @@ if(CONFIG_LVX_USE_DEMO_CONTEST2026_148_VELAGUARD)
     comm/velaguard_ble.c
     ${NUTTX_DIR}/../apps/external/zblue/zblue/port/drivers/bluetooth/hci/h4.c
     ui/velaguard_font_18.c)
+
+  if(CONFIG_CONTEST2026_148_AUDIO_TEST)
+    nuttx_add_application(
+      NAME
+      audio_test
+      PRIORITY
+      100
+      STACKSIZE
+      16384
+      MODULE
+      ${CONFIG_CONTEST2026_148_AUDIO_TEST}
+      SRCS
+      audio/audio_test.c)
+  endif()
 endif()
