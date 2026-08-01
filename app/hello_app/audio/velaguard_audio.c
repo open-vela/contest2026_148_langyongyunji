@@ -1,38 +1,42 @@
 /****************************************************************************
  * VelaGuard PCM front-end: DC removal and basic voice activity measurement.
+ *
+ * Uses the NuttX standard audio interface to capture from the SiFli
+ * lower-half driver (sf32lb_audio.c) at 16 kHz mono 16-bit PCM via
+ * /dev/audio/pcm0c.  Buffers are delivered asynchronously through a POSIX
+ * message queue and polled non-blocking in the main loop.
  ****************************************************************************/
 
 #include "velaguard_audio.h"
 
-#include "register.h"
-#include "sfconfig.h"
-#include "bf0_hal_dma.h"
-#include "bf0_hal_audcodec.h"
-#include "bf0_hal_pmu.h"
-#include "bf0_hal_rcc.h"
-#include "config/sf32lb52x/dma_config.h"
-
-#include <nuttx/cache.h>
-#include <nuttx/arch.h>
-#include <nuttx/irq.h>
+#include <nuttx/config.h>
+#include <nuttx/audio/audio.h>
 
 #include <errno.h>
+#include <fcntl.h>
+#include <mqueue.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
+#include <unistd.h>
 
+#define DEVICE_CAPT              "/dev/audio/pcm0c"
+#define MQ_NAME                  "velaguard_audio_mq"
+#define SAMPLE_RATE              16000
 #define VG_AUDIO_SPEECH_MEAN_ABS 200
 #define VG_AUDIO_SPEECH_PEAK     700
-#define VG_AUDIO_DMA_BYTES       2048
-#define VG_AUDIO_DMA_HALF_BYTES  (VG_AUDIO_DMA_BYTES / 2)
-#define VG_AUDIO_SAMPLE_RATE     16000
+#define VG_AUDIO_MAX_BUFS        4
 
-static AUDCODEC_HandleTypeDef g_vg_codec;
-static DMA_HandleTypeDef g_vg_codec_dma;
-static uint8_t g_vg_audio_dma[VG_AUDIO_DMA_BYTES]
-  __attribute__((aligned(32)));
-static volatile uint8_t g_vg_audio_ready;
-static volatile uint32_t g_vg_audio_sequence;
+static int g_vg_audio_fd = -1;
+static mqd_t g_vg_audio_mq = -1;
+static struct ap_buffer_s *g_vg_audio_bufs[VG_AUDIO_MAX_BUFS];
+static unsigned int g_vg_audio_nbufs;
+static uint32_t g_vg_audio_sequence;
 static bool g_vg_audio_started;
+
+/****************************************************************************
+ * Keyword model integration point (weak, override with offline KWS model)
+ ****************************************************************************/
 
 __attribute__((weak))
 enum vg_audio_keyword_e vg_audio_kws_infer(const int16_t *samples,
@@ -45,48 +49,25 @@ enum vg_audio_keyword_e vg_audio_kws_infer(const int16_t *samples,
   return VG_AUDIO_KEYWORD_NONE;
 }
 
-extern HAL_StatusTypeDef HAL_AUDCODEC_Config_ADCPath_Volume(
-  AUDCODEC_HandleTypeDef *codec, int channel, int volume);
+/****************************************************************************
+ * audio_config
+ ****************************************************************************/
 
-static const AUDCODE_ADC_CLK_CONFIG_TYPE g_vg_adc_clock =
+static int audio_config(int fd)
 {
-  16000, 0, 10, 1, 0, 0, 5, 2
-};
-
-static int vg_audio_dma_isr(int irq, void *context, void *arg)
-{
-  HAL_DMA_IRQHandler(&g_vg_codec_dma);
-  return 0;
+  struct audio_caps_s caps;
+  memset(&caps, 0, sizeof(caps));
+  caps.ac_len        = sizeof(caps);
+  caps.ac_type       = AUDIO_TYPE_INPUT;
+  caps.ac_channels   = 1;
+  caps.ac_format.hw  = AUDIO_FMT_PCM;
+  caps.ac_controls.hw[0] = SAMPLE_RATE;
+  return ioctl(fd, AUDIOIOC_CONFIGURE, &caps);
 }
 
-__attribute__((weak))
-void HAL_AUDCODEC_RxHalfCpltCallback(AUDCODEC_HandleTypeDef *codec, int cid)
-{
-  if (codec == &g_vg_codec && cid == HAL_AUDCODEC_ADC_CH0)
-    {
-      g_vg_audio_ready |= 1;
-      g_vg_audio_sequence++;
-    }
-}
-
-__attribute__((weak))
-void HAL_AUDCODEC_RxCpltCallback(AUDCODEC_HandleTypeDef *codec, int cid)
-{
-  if (codec == &g_vg_codec && cid == HAL_AUDCODEC_ADC_CH0)
-    {
-      g_vg_audio_ready |= 2;
-      g_vg_audio_sequence++;
-    }
-}
-
-__attribute__((weak))
-void HAL_AUDCODEC_ErrorCallback(AUDCODEC_HandleTypeDef *codec, int cid)
-{
-  if (codec == &g_vg_codec && cid == HAL_AUDCODEC_ADC_CH0)
-    {
-      g_vg_audio_ready |= 4;
-    }
-}
+/****************************************************************************
+ * Public Functions
+ ****************************************************************************/
 
 void vg_audio_analyze_pcm16(const int16_t *samples, size_t count,
                             struct vg_audio_level_s *level)
@@ -130,7 +111,10 @@ void vg_audio_analyze_pcm16(const int16_t *samples, size_t count,
 
 int vg_audio_capture_start(void)
 {
-  AUDCODEC_ADCCfgTypeDef adc_cfg;
+  struct ap_buffer_info_s bufinfo;
+  struct audio_buf_desc_s desc;
+  struct mq_attr attr;
+  unsigned int i;
   int ret;
 
   if (g_vg_audio_started)
@@ -138,97 +122,144 @@ int vg_audio_capture_start(void)
       return 0;
     }
 
-  memset(&g_vg_codec, 0, sizeof(g_vg_codec));
-  memset(&g_vg_codec_dma, 0, sizeof(g_vg_codec_dma));
-  memset(g_vg_audio_dma, 0, sizeof(g_vg_audio_dma));
+  /* Open capture device registered by sf32lb_audio_initialize(). */
 
-  g_vg_codec.Instance = hwp_audcodec;
-  g_vg_codec.hdma[HAL_AUDCODEC_ADC_CH0] = &g_vg_codec_dma;
-  g_vg_codec.Init.en_dly_sel = 0;
-  g_vg_codec.Init.adc_cfg.opmode = 1;
-  g_vg_codec.Init.adc_cfg.adc_clk =
-    (AUDCODE_ADC_CLK_CONFIG_TYPE *)&g_vg_adc_clock;
-  g_vg_codec.bufSize = sizeof(g_vg_audio_dma);
+  g_vg_audio_fd = open(DEVICE_CAPT, O_RDONLY);
+  if (g_vg_audio_fd < 0)
+    {
+      printf("VelaGuard audio: open %s failed: %d\n", DEVICE_CAPT, errno);
+      return -ENODEV;
+    }
 
-  g_vg_codec_dma.Instance = AUDCODEC_ADC0_DMA_INSTANCE;
-  g_vg_codec_dma.Init.Request = AUDCODEC_ADC0_DMA_REQUEST;
+  /* Configure 16 kHz mono PCM. */
 
-  HAL_PMU_EnableAudio(1);
-  HAL_RCC_EnableModule(RCC_MOD_AUDCODEC);
+  if (audio_config(g_vg_audio_fd) < 0)
+    {
+      printf("VelaGuard audio: configure failed\n");
+      goto err_close;
+    }
 
-  /* Power and calibrate the audio PLL/bandgap before touching the ADC.
-   * Enabling only the RCC clock lets DMA run, but the analog converter then
-   * produces an all-zero stream.  16 kHz belongs to the 48 kHz clock family.
-   */
+  /* Allocate audio buffers. */
 
-  ret = bf0_enable_pll(g_vg_adc_clock.samplerate, 1);
+  memset(&bufinfo, 0, sizeof(bufinfo));
+  ret = ioctl(g_vg_audio_fd, AUDIOIOC_GETBUFFERINFO, &bufinfo);
   if (ret < 0)
     {
-      printf("VelaGuard audio: PLL enable failed (%d)\n", ret);
-      return ret;
+      printf("VelaGuard audio: get buffer info failed\n");
+      goto err_close;
     }
 
-  if (HAL_AUDCODEC_Init(&g_vg_codec) != HAL_OK)
+  g_vg_audio_nbufs = (unsigned int)bufinfo.nbuffers;
+  if (g_vg_audio_nbufs < 1) g_vg_audio_nbufs = 1;
+  if (g_vg_audio_nbufs > VG_AUDIO_MAX_BUFS) g_vg_audio_nbufs = VG_AUDIO_MAX_BUFS;
+
+  for (i = 0; i < g_vg_audio_nbufs; i++)
     {
-      return -EIO;
+      memset(&desc, 0, sizeof(desc));
+      desc.numbytes = (apb_samp_t)bufinfo.buffer_size;
+      desc.u.pbuffer = &g_vg_audio_bufs[i];
+      ret = ioctl(g_vg_audio_fd, AUDIOIOC_ALLOCBUFFER, &desc);
+      if (ret < 0)
+        {
+          printf("VelaGuard audio: alloc buffer %u failed\n", i);
+          goto err_free_bufs;
+        }
     }
 
-  memset(&adc_cfg, 0, sizeof(adc_cfg));
-  adc_cfg.opmode = 1;
-  adc_cfg.adc_clk = (AUDCODE_ADC_CLK_CONFIG_TYPE *)&g_vg_adc_clock;
-  if (HAL_AUDCODEC_Config_RChanel(&g_vg_codec, 0, &adc_cfg) != HAL_OK)
+  /* Create message queue for asynchronous dequeue notifications. */
+
+  attr.mq_maxmsg  = 8;
+  attr.mq_msgsize = sizeof(struct audio_msg_s);
+  attr.mq_flags   = 0;
+  g_vg_audio_mq = mq_open(MQ_NAME, O_RDWR | O_CREAT, 0666, &attr);
+  if (g_vg_audio_mq < 0)
     {
-      return -EIO;
+      printf("VelaGuard audio: mq_open failed\n");
+      goto err_free_bufs;
     }
+  mq_unlink(MQ_NAME);
 
-  if (HAL_AUDCODEC_Config_ADCPath_Volume(&g_vg_codec, 0, 12) != HAL_OK)
+  ioctl(g_vg_audio_fd, AUDIOIOC_REGISTERMQ,
+        (unsigned long)g_vg_audio_mq);
+
+  /* Enqueue empty buffers so the driver can fill them with DMA. */
+
+  for (i = 0; i < g_vg_audio_nbufs; i++)
     {
-      return -EIO;
+      memset(&desc, 0, sizeof(desc));
+      desc.u.buffer = g_vg_audio_bufs[i];
+      ret = ioctl(g_vg_audio_fd, AUDIOIOC_ENQUEUEBUFFER, &desc);
+      if (ret < 0)
+        {
+          printf("VelaGuard audio: enqueue buffer %u failed\n", i);
+          goto err_unreg_mq;
+        }
     }
 
-  ret = irq_attach(NX_IRQ(AUDCODEC_ADC0_DMA_IRQ), vg_audio_dma_isr, NULL);
-  if (ret < 0)
+  /* Start capture. */
+
+  if (ioctl(g_vg_audio_fd, AUDIOIOC_START, 0) < 0)
     {
-      return ret;
+      printf("VelaGuard audio: start failed\n");
+      goto err_unreg_mq;
     }
 
-  /* Prevent dirty cache lines from overwriting samples written by DMA. */
-
-  up_clean_dcache((uintptr_t)g_vg_audio_dma,
-                  (uintptr_t)g_vg_audio_dma + sizeof(g_vg_audio_dma));
-  if (HAL_AUDCODEC_Receive_DMA(&g_vg_codec, g_vg_audio_dma,
-                               sizeof(g_vg_audio_dma),
-                               HAL_AUDCODEC_ADC_CH0) != HAL_OK)
-    {
-      irq_detach(NX_IRQ(AUDCODEC_ADC0_DMA_IRQ));
-      return -EIO;
-    }
-
-  HAL_AUCODEC_Refgen_Init();
-  HAL_AUDCODEC_Config_Analog_ADCPath(
-    (AUDCODE_ADC_CLK_CONFIG_TYPE *)&g_vg_adc_clock);
-  __HAL_AUDCODEC_ADC_ENABLE(&g_vg_codec);
-  up_enable_irq(NX_IRQ(AUDCODEC_ADC0_DMA_IRQ));
-
-  g_vg_audio_ready = 0;
   g_vg_audio_sequence = 0;
   g_vg_audio_started = true;
-  printf("VelaGuard audio: MIC ADC0 16kHz/16-bit DMA started\n");
+  printf("VelaGuard audio: MIC 16kHz/16-bit capture started\n");
   return 0;
+
+err_unreg_mq:
+  ioctl(g_vg_audio_fd, AUDIOIOC_UNREGISTERMQ,
+        (unsigned long)g_vg_audio_mq);
+  mq_close(g_vg_audio_mq);
+  g_vg_audio_mq = -1;
+err_free_bufs:
+  for (i = 0; i < g_vg_audio_nbufs; i++)
+    {
+      if (g_vg_audio_bufs[i] != NULL)
+        {
+          memset(&desc, 0, sizeof(desc));
+          desc.u.buffer = g_vg_audio_bufs[i];
+          ioctl(g_vg_audio_fd, AUDIOIOC_FREEBUFFER, &desc);
+          g_vg_audio_bufs[i] = NULL;
+        }
+    }
+err_close:
+  close(g_vg_audio_fd);
+  g_vg_audio_fd = -1;
+  return -EIO;
 }
 
 void vg_audio_capture_stop(void)
 {
+  struct audio_buf_desc_s desc;
+  unsigned int i;
+
   if (!g_vg_audio_started)
     {
       return;
     }
 
-  up_disable_irq(NX_IRQ(AUDCODEC_ADC0_DMA_IRQ));
-  HAL_AUDCODEC_DMAStop(&g_vg_codec, HAL_AUDCODEC_ADC_CH0);
-  HAL_AUDCODEC_Close_Analog_ADCPath();
-  HAL_AUDCODEC_DeInit(&g_vg_codec);
-  irq_detach(NX_IRQ(AUDCODEC_ADC0_DMA_IRQ));
+  ioctl(g_vg_audio_fd, AUDIOIOC_STOP, 0);
+  ioctl(g_vg_audio_fd, AUDIOIOC_UNREGISTERMQ,
+        (unsigned long)g_vg_audio_mq);
+  mq_close(g_vg_audio_mq);
+  g_vg_audio_mq = -1;
+
+  for (i = 0; i < g_vg_audio_nbufs; i++)
+    {
+      if (g_vg_audio_bufs[i] != NULL)
+        {
+          memset(&desc, 0, sizeof(desc));
+          desc.u.buffer = g_vg_audio_bufs[i];
+          ioctl(g_vg_audio_fd, AUDIOIOC_FREEBUFFER, &desc);
+          g_vg_audio_bufs[i] = NULL;
+        }
+    }
+
+  close(g_vg_audio_fd);
+  g_vg_audio_fd = -1;
   g_vg_audio_started = false;
 }
 
@@ -236,59 +267,65 @@ bool vg_audio_capture_level(struct vg_audio_level_s *level,
                             uint32_t *sequence,
                             enum vg_audio_keyword_e *keyword)
 {
-  irqstate_t flags;
-  const int16_t *samples = NULL;
-  uint8_t ready;
-  uint32_t seq;
+  struct audio_msg_s msg;
+  struct audio_buf_desc_s desc;
+  struct timespec ts;
+  struct ap_buffer_s *apb;
+  ssize_t r;
 
-  flags = up_irq_save();
-  ready = g_vg_audio_ready;
-  if (ready & 4)
-    {
-      g_vg_audio_ready &= ~4;
-      up_irq_restore(flags);
-      printf("VelaGuard audio: DMA error\n");
-      return false;
-    }
-
-  if (ready & 1)
-    {
-      g_vg_audio_ready &= ~1;
-      samples = (const int16_t *)g_vg_audio_dma;
-    }
-  else if (ready & 2)
-    {
-      g_vg_audio_ready &= ~2;
-      samples = (const int16_t *)(g_vg_audio_dma + VG_AUDIO_DMA_HALF_BYTES);
-    }
-
-  seq = g_vg_audio_sequence;
-  up_irq_restore(flags);
-
-  if (samples == NULL)
+  if (!g_vg_audio_started)
     {
       return false;
     }
 
-  up_invalidate_dcache((uintptr_t)samples,
-                       (uintptr_t)samples + VG_AUDIO_DMA_HALF_BYTES);
-  vg_audio_analyze_pcm16(samples, VG_AUDIO_DMA_HALF_BYTES / sizeof(int16_t),
-                         level);
-  if (keyword != NULL)
-    {
-      /* KWS is gated by VAD to avoid spending model time on silence.  A
-       * positive VAD result is not itself treated as a recognized keyword.
-       */
+  /* Non-blocking poll: return immediately if no message is ready. */
 
-      *keyword = level->speech_active ?
-        vg_audio_kws_infer(samples,
-                           VG_AUDIO_DMA_HALF_BYTES / sizeof(int16_t),
-                           VG_AUDIO_SAMPLE_RATE) : VG_AUDIO_KEYWORD_NONE;
-    }
-  if (sequence != NULL)
+  memset(&ts, 0, sizeof(ts));
+  r = mq_timedreceive(g_vg_audio_mq, (FAR char *)&msg, sizeof(msg),
+                      NULL, &ts);
+  if (r < 0)
     {
-      *sequence = seq;
+      return false;
     }
 
-  return true;
+  if (msg.msg_id == AUDIO_MSG_DEQUEUE)
+    {
+      apb = (struct ap_buffer_s *)msg.u.ptr;
+      unsigned int nsamp = (unsigned int)apb->nbytes / sizeof(int16_t);
+
+      g_vg_audio_sequence++;
+
+      vg_audio_analyze_pcm16((const int16_t *)apb->samp, nsamp, level);
+
+      if (keyword != NULL)
+        {
+          *keyword = level->speech_active ?
+            vg_audio_kws_infer((const int16_t *)apb->samp, nsamp,
+                               SAMPLE_RATE) : VG_AUDIO_KEYWORD_NONE;
+        }
+
+      if (sequence != NULL)
+        {
+          *sequence = g_vg_audio_sequence;
+        }
+
+      /* Re-enqueue buffer for the next DMA cycle. */
+
+      memset(&desc, 0, sizeof(desc));
+      desc.u.buffer = apb;
+      ioctl(g_vg_audio_fd, AUDIOIOC_ENQUEUEBUFFER, &desc);
+
+      return true;
+    }
+
+  /* Re-enqueue on error / complete so the DMA pipeline stays alive. */
+
+  if (msg.u.ptr != NULL)
+    {
+      memset(&desc, 0, sizeof(desc));
+      desc.u.buffer = (struct ap_buffer_s *)msg.u.ptr;
+      ioctl(g_vg_audio_fd, AUDIOIOC_ENQUEUEBUFFER, &desc);
+    }
+
+  return false;
 }

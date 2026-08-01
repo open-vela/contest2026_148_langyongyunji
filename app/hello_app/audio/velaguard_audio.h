@@ -24,8 +24,8 @@ enum vg_audio_keyword_e
   VG_AUDIO_KEYWORD_QIUZHU,
 };
 
-/* Analyze one mono signed-16 PCM frame. This hardware-independent stage is
- * shared by the upcoming AUDCODEC DMA backend and keyword detector.
+/* Analyze one mono signed-16 PCM frame. Hardware-independent; used by
+ * the NuttX audio capture path and keyword detector.
  */
 
 void vg_audio_analyze_pcm16(const int16_t *samples, size_t count,
