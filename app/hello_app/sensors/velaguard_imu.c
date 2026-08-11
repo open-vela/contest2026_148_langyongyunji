@@ -51,8 +51,18 @@
 
 extern void BSP_GPIO_Set(int pin, int val, int is_porta);
 extern void BSP_PIN_Touch(void);
-extern int sf32lb52_i2c1_mux_lock(void);
-extern int sf32lb52_i2c1_mux_unlock(void);
+
+__attribute__((weak))
+int sf32lb52_i2c1_mux_lock(void)
+{
+  return 0;
+}
+
+__attribute__((weak))
+int sf32lb52_i2c1_mux_unlock(void)
+{
+  return 0;
+}
 
 /****************************************************************************
  * Private Functions
