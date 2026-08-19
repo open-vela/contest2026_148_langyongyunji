@@ -18,22 +18,26 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define VG_FALL_STATE_IDLE      0
-#define VG_FALL_STATE_IMPACT    1
+#define VG_FALL_STATE_IDLE         0
+#define VG_FALL_STATE_FREEFALL     1
+#define VG_FALL_STATE_IMPACT       2
 
-#define VG_FALL_FREEFALL_MG     650
-#define VG_FALL_IMPACT_MG       1400
-#define VG_FALL_GYRO_DPS        700
-#define VG_FALL_COMBO_MG        1200
-#define VG_FALL_COMBO_GYRO_DPS  350
-#define VG_FALL_POSTURE_DEG     30
-#define VG_FALL_BASE_MIN_MG     750
-#define VG_FALL_BASE_MAX_MG     1250
-#define VG_FALL_STILL_MIN_MG    850
-#define VG_FALL_STILL_MAX_MG    1150
-#define VG_FALL_STILL_GYRO_DPS  110
-#define VG_FALL_STILL_NEED_MS   1200
-#define VG_FALL_MAX_WINDOW_MS   5000
+#define VG_FALL_FREEFALL_MG        650
+#define VG_FALL_FREEFALL_NEED_MS   80
+#define VG_FALL_IMPACT_WINDOW_MS   800
+#define VG_FALL_CONFIRM_WINDOW_MS  5000
+#define VG_FALL_HARD_IMPACT_MG     1800
+#define VG_FALL_IMPACT_MG          1400
+#define VG_FALL_GYRO_DPS           700
+#define VG_FALL_COMBO_MG           1200
+#define VG_FALL_COMBO_GYRO_DPS     350
+#define VG_FALL_POSTURE_DEG        30
+#define VG_FALL_BASE_MIN_MG        750
+#define VG_FALL_BASE_MAX_MG        1250
+#define VG_FALL_STILL_MIN_MG       850
+#define VG_FALL_STILL_MAX_MG       1150
+#define VG_FALL_STILL_GYRO_DPS     110
+#define VG_FALL_STILL_NEED_MS      1200
 
 /****************************************************************************
  * Private Functions
@@ -83,9 +87,11 @@ int vg_fall_accel_mag_mg(const struct vg_fall_sample_s *sample)
 
 int vg_fall_gyro_sum_dps(const struct vg_fall_sample_s *sample)
 {
-  return (int)(vg_u64_abs(sample->gx_dps) +
-               vg_u64_abs(sample->gy_dps) +
-               vg_u64_abs(sample->gz_dps));
+  uint64_t x = vg_u64_abs(sample->gx_dps);
+  uint64_t y = vg_u64_abs(sample->gy_dps);
+  uint64_t z = vg_u64_abs(sample->gz_dps);
+
+  return (int)vg_isqrt64(x * x + y * y + z * z);
 }
 
 static int vg_cos1000_to_deg(int cos1000)
@@ -266,7 +272,7 @@ static void vg_fill_result(struct vg_fall_detector_s *detector,
       result->confidence += 7;
     }
 
-  if (detector->freefall_seen)
+  if (detector->freefall_ms >= VG_FALL_FREEFALL_NEED_MS)
     {
       result->confidence += 4;
     }
@@ -296,7 +302,7 @@ static int vg_fall_sample_dt_ms(struct vg_fall_detector_s *detector,
       sample->timestamp_ms <= detector->last_sample_ms)
     {
       detector->last_sample_ms = sample->timestamp_ms;
-      return 100;
+      return 20;
     }
 
   dt = sample->timestamp_ms - detector->last_sample_ms;
@@ -315,8 +321,28 @@ static int vg_fall_sample_dt_ms(struct vg_fall_detector_s *detector,
   return (int)dt;
 }
 
-static bool vg_fall_should_enter_candidate(int mag_mg, int gyro_dps,
-                                           bool freefall_seen)
+static bool vg_fall_is_direct_impact(int mag_mg, int gyro_dps)
+{
+  if (mag_mg >= VG_FALL_HARD_IMPACT_MG &&
+      gyro_dps >= VG_FALL_COMBO_GYRO_DPS)
+    {
+      return true;
+    }
+
+  if (mag_mg >= VG_FALL_IMPACT_MG && gyro_dps >= VG_FALL_GYRO_DPS)
+    {
+      return true;
+    }
+
+  if (mag_mg >= VG_FALL_COMBO_MG && gyro_dps >= VG_FALL_COMBO_GYRO_DPS)
+    {
+      return true;
+    }
+
+  return false;
+}
+
+static bool vg_fall_is_freefall_impact(int mag_mg, int gyro_dps)
 {
   if (mag_mg >= VG_FALL_IMPACT_MG)
     {
@@ -329,11 +355,6 @@ static bool vg_fall_should_enter_candidate(int mag_mg, int gyro_dps,
     }
 
   if (mag_mg >= VG_FALL_COMBO_MG && gyro_dps >= VG_FALL_COMBO_GYRO_DPS)
-    {
-      return true;
-    }
-
-  if (freefall_seen && mag_mg >= 1300)
     {
       return true;
     }
@@ -375,23 +396,82 @@ bool vg_fall_process(struct vg_fall_detector_s *detector,
 
       if (mag_mg < VG_FALL_FREEFALL_MG)
         {
-          detector->freefall_seen = true;
+          if (detector->freefall_ms == 0)
+            {
+              detector->freefall_start_ms = sample->timestamp_ms;
+            }
+
+          detector->freefall_ms += dt_ms;
+          if (detector->freefall_ms >= VG_FALL_FREEFALL_NEED_MS)
+            {
+              detector->state = VG_FALL_STATE_FREEFALL;
+              detector->impact_ms = 0;
+              detector->peak_mg = mag_mg;
+              detector->peak_gyro_dps = gyro_dps;
+              detector->trigger_mg = mag_mg;
+              detector->trigger_gyro_dps = gyro_dps;
+              detector->posture_delta_deg = 0;
+              detector->still_ms = 0;
+              detector->posture_changed = false;
+            }
+        }
+      else
+        {
+          detector->freefall_ms = 0;
+          detector->freefall_start_ms = 0;
         }
 
-      if (vg_fall_should_enter_candidate(mag_mg, gyro_dps,
-                                         detector->freefall_seen))
+      if (vg_fall_is_direct_impact(mag_mg, gyro_dps))
         {
           detector->state = VG_FALL_STATE_IMPACT;
           detector->impact_ms = sample->timestamp_ms;
-          detector->trigger_mg = mag_mg;
-          detector->trigger_gyro_dps = gyro_dps;
           detector->peak_mg = mag_mg;
           detector->peak_gyro_dps = gyro_dps;
+          detector->trigger_mg = mag_mg;
+          detector->trigger_gyro_dps = gyro_dps;
           detector->posture_delta_deg = 0;
           detector->still_ms = 0;
           detector->posture_changed = false;
         }
 
+      return false;
+    }
+
+  if (detector->state == VG_FALL_STATE_FREEFALL)
+    {
+      if (sample->timestamp_ms - detector->freefall_start_ms >
+          VG_FALL_IMPACT_WINDOW_MS)
+        {
+          vg_fall_init(detector);
+          return false;
+        }
+
+      if (mag_mg < VG_FALL_FREEFALL_MG)
+        {
+          detector->freefall_ms += dt_ms;
+          return false;
+        }
+
+      if (vg_fall_is_freefall_impact(mag_mg, gyro_dps))
+        {
+          detector->state = VG_FALL_STATE_IMPACT;
+          detector->impact_ms = sample->timestamp_ms;
+          detector->peak_mg = mag_mg;
+          detector->peak_gyro_dps = gyro_dps;
+          detector->trigger_mg = mag_mg;
+          detector->trigger_gyro_dps = gyro_dps;
+          detector->posture_delta_deg = 0;
+          detector->still_ms = 0;
+          detector->posture_changed = false;
+        }
+
+      return false;
+    }
+
+  if (sample->timestamp_ms - detector->impact_ms >
+      VG_FALL_CONFIRM_WINDOW_MS)
+    {
+      vg_fall_init(detector);
       return false;
     }
 
@@ -423,13 +503,9 @@ bool vg_fall_process(struct vg_fall_detector_s *detector,
     {
       detector->still_ms += dt_ms;
     }
-  else if (detector->still_ms > 0)
+  else
     {
-      detector->still_ms -= dt_ms;
-      if (detector->still_ms < 0)
-        {
-          detector->still_ms = 0;
-        }
+      detector->still_ms = 0;
     }
 
   if (detector->posture_changed &&
@@ -442,11 +518,6 @@ bool vg_fall_process(struct vg_fall_detector_s *detector,
 
       vg_fall_init(detector);
       return true;
-    }
-
-  if (sample->timestamp_ms - detector->impact_ms > VG_FALL_MAX_WINDOW_MS)
-    {
-      vg_fall_init(detector);
     }
 
   return false;

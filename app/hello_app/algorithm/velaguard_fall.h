@@ -50,6 +50,8 @@ struct vg_fall_detector_s
   int32_t base_y_mg;
   int32_t base_z_mg;
   uint32_t last_sample_ms;
+  uint32_t freefall_start_ms;
+  uint32_t freefall_ms;
   uint32_t impact_ms;
   int last_mg;
   int last_gyro_dps;
@@ -60,7 +62,6 @@ struct vg_fall_detector_s
   int posture_delta_deg;
   int still_ms;
   bool posture_changed;
-  bool freefall_seen;
 };
 
 /****************************************************************************

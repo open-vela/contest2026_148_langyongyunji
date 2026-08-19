@@ -124,9 +124,11 @@ static int vg_imu_accel_mag_mg(const struct vg_imu_sample_s *sample)
 
 static int vg_imu_gyro_sum_dps(const struct vg_imu_sample_s *sample)
 {
-  return (int)(vg_imu_u64_abs(sample->gx_dps) +
-               vg_imu_u64_abs(sample->gy_dps) +
-               vg_imu_u64_abs(sample->gz_dps));
+  uint64_t x = vg_imu_u64_abs(sample->gx_dps);
+  uint64_t y = vg_imu_u64_abs(sample->gy_dps);
+  uint64_t z = vg_imu_u64_abs(sample->gz_dps);
+
+  return (int)vg_imu_isqrt64(x * x + y * y + z * z);
 }
 
 static void vg_imu_to_fall_sample(const struct vg_imu_sample_s *imu,
@@ -370,12 +372,12 @@ int vg_imu_read(struct vg_imu_s *imu, struct vg_imu_sample_s *sample)
   az = vg_i16_le(&data[10]);
 
   sample->timestamp_ms = vg_imu_uptime_ms();
-  sample->ax_mg = (int32_t)ax * 244 / 1000;
-  sample->ay_mg = (int32_t)ay * 244 / 1000;
-  sample->az_mg = (int32_t)az * 244 / 1000;
-  sample->gx_dps = (int32_t)gx * 70 / 1000;
-  sample->gy_dps = (int32_t)gy * 70 / 1000;
-  sample->gz_dps = (int32_t)gz * 70 / 1000;
+  sample->ax_mg = ((int32_t)ax * 244 + (ax >= 0 ? 500 : -500)) / 1000;
+  sample->ay_mg = ((int32_t)ay * 244 + (ay >= 0 ? 500 : -500)) / 1000;
+  sample->az_mg = ((int32_t)az * 244 + (az >= 0 ? 500 : -500)) / 1000;
+  sample->gx_dps = ((int32_t)gx * 70 + (gx >= 0 ? 500 : -500)) / 1000;
+  sample->gy_dps = ((int32_t)gy * 70 + (gy >= 0 ? 500 : -500)) / 1000;
+  sample->gz_dps = ((int32_t)gz * 70 + (gz >= 0 ? 500 : -500)) / 1000;
 
   return 0;
 }
