@@ -62,6 +62,8 @@ if(CONFIG_LVX_USE_DEMO_CONTEST2026_148_VELAGUARD)
     core/velaguard_boot.c
     algorithm/velaguard_fall.c
     audio/velaguard_audio.c
+    audio/velaguard_audio_feedback.c
+    audio/velaguard_wav_parser.c
     sensors/velaguard_imu.c
     comm/velaguard_ble.c
     ${NUTTX_DIR}/../apps/external/zblue/zblue/port/drivers/bluetooth/hci/h4.c

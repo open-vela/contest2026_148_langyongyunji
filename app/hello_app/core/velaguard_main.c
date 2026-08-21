@@ -36,6 +36,7 @@
 #include "velaguard_imu.h"
 #include "velaguard_ble.h"
 #include "velaguard_audio.h"
+#include "velaguard_audio_feedback.h"
 
 LV_FONT_DECLARE(velaguard_font_18);
 
@@ -429,9 +430,21 @@ static void vg_confirm_alert(void)
   ble_type = g_vg.active.type == VG_EVENT_FALL ? VG_BLE_EVENT_FALL :
              g_vg.active.type == VG_EVENT_VOICE ? VG_BLE_EVENT_VOICE_SOS :
              VG_BLE_EVENT_MANUAL_SOS;
-  vg_ble_request_call(ble_type, g_vg.active.risk,
-                      g_vg.active.confidence, g_vg.active.id,
-                      (uint32_t)g_vg.active.timestamp_ms, true);
+  {
+    int ble_ret = vg_ble_request_call(ble_type, g_vg.active.risk,
+                        g_vg.active.confidence, g_vg.active.id,
+                        (uint32_t)g_vg.active.timestamp_ms, true);
+#ifdef CONFIG_CONTEST2026_148_AUDIO_FEEDBACK
+    if (ble_ret == 0 || ble_ret == -ENOTCONN)
+      {
+        vg_audio_feedback_trigger(VG_FEEDBACK_SUCCESS);
+      }
+    else
+      {
+        vg_audio_feedback_trigger(VG_FEEDBACK_FAILURE);
+      }
+#endif
+  }
   vg_render_alert();
 }
 
@@ -449,11 +462,23 @@ static void vg_trigger_event(enum vg_event_type_e type)
       g_vg.state = VG_STATE_ALERTING;
       vg_history_push(&g_vg.active);
       vg_emit_json(&g_vg.active);
-      vg_ble_request_call(type == VG_EVENT_VOICE ?
-                          VG_BLE_EVENT_VOICE_SOS :
-                          VG_BLE_EVENT_MANUAL_SOS, g_vg.active.risk,
-                          g_vg.active.confidence, g_vg.active.id,
-                          (uint32_t)g_vg.active.timestamp_ms, true);
+      {
+        int ble_ret = vg_ble_request_call(type == VG_EVENT_VOICE ?
+                            VG_BLE_EVENT_VOICE_SOS :
+                            VG_BLE_EVENT_MANUAL_SOS, g_vg.active.risk,
+                            g_vg.active.confidence, g_vg.active.id,
+                            (uint32_t)g_vg.active.timestamp_ms, true);
+#ifdef CONFIG_CONTEST2026_148_AUDIO_FEEDBACK
+        if (ble_ret == 0 || ble_ret == -ENOTCONN)
+          {
+            vg_audio_feedback_trigger(VG_FEEDBACK_SUCCESS);
+          }
+        else
+          {
+            vg_audio_feedback_trigger(VG_FEEDBACK_FAILURE);
+          }
+#endif
+      }
       vg_render_alert();
       return;
     }
@@ -1465,6 +1490,9 @@ int main(int argc, FAR char *argv[])
     {
       vg_ble_process();
       vg_audio_process();
+#ifdef CONFIG_CONTEST2026_148_AUDIO_FEEDBACK
+      vg_audio_feedback_process();
+#endif
 
       uint32_t idle = lv_timer_handler();
       idle = idle ? idle : 1;

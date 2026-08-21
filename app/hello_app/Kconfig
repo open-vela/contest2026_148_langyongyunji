@@ -69,4 +69,14 @@ config CONTEST2026_148_AUDIO_TEST
 		test tone through the speaker, and prints key diagnostics to
 		the serial console.
 
+config CONTEST2026_148_AUDIO_FEEDBACK
+	bool "Audio feedback for SOS events (WAV files)"
+	default y
+	depends on AUDIO
+	---help---
+		Play pre-recorded WAV files through the speaker when a
+		distress call is triggered or fails.  WAV files are stored
+		in ROMFS at /etc/data/audio/.
+		Requires: success.wav and failure.wav (16kHz, 16-bit, mono PCM).
+
 endif # LVX_USE_DEMO_CONTEST2026_148_VELAGUARD
