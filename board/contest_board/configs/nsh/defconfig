@@ -75,10 +75,10 @@ CONFIG_BT_EXT_ADV=y
 # CONFIG_BT_HCI_ACL_FLOW_CONTROL is not set
 CONFIG_BT_POWER_MODE_CONTROL=y
 CONFIG_BT_GATT_CLIENT=y
-# The SF32LB52 controller occasionally drops LE Set Random Address during
-# startup.  VelaGuard is a fixed peripheral and does not need address
-# rotation, so advertise with the controller identity address instead.
-# CONFIG_BT_PRIVACY is not set
+# zblue host (id.c:bt_setup_public_id_addr) references bt_dev.irk
+# unconditionally, and irk is only present when CONFIG_BT_PRIVACY is
+# enabled.  Keep privacy enabled to satisfy the build.
+CONFIG_BT_PRIVACY=y
 # Allow optional Just Works bonding for generic BLE tools.  The VelaGuard
 # application protocol itself does not require pairing or encryption.
 # CONFIG_BT_SMP_ENFORCE_MITM is not set
