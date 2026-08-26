@@ -40,6 +40,19 @@
 #define MQ_NAME              "audio_test_mq"
 #define REC_FILE             "/data/audio_test_rec.wav"
 
+/* Application-level capture gain: the driver defaults to +30 dB (volume
+ * 1000); back off 3 dB to +27 dB to avoid clipping on loud speech.
+ * Volume uses the OpenVela 0..1000 convention.
+ */
+
+#define REC_CAPTURE_GAIN     967     /* +27 dB */
+
+/****************************************************************************
+ * Private Function Prototypes
+ ****************************************************************************/
+
+static int set_capture_gain(int fd, unsigned int gain);
+
 /****************************************************************************
  * Private Functions
  ****************************************************************************/
@@ -263,6 +276,13 @@ static int do_record(unsigned int duration_ms)
 
   if (audio_config(fd, AUDIO_TYPE_INPUT) < 0)
     { printf("[record] ERROR config cap\n"); free(rec_data); goto close_cap; }
+
+  /* Apply application-level capture gain: driver default +30 dB minus
+   * 3 dB headroom to avoid clipping on loud speech.
+   */
+
+  if (set_capture_gain(fd, REC_CAPTURE_GAIN) < 0)
+    printf("[record] WARNING: set capture gain failed\n");
 
   /* Allocate buffers */
   for (n = 0; n < nbufs; n++)
@@ -535,6 +555,58 @@ close_play:
 }
 
 /****************************************************************************
+ * set_capture_gain — set capture (MIC) gain via the standard NuttX/OpenVela
+ * audio interface: AUDIOIOC_CONFIGURE + AUDIO_TYPE_FEATURE + AUDIO_FU_VOLUME.
+ * value is 0..1000 (same convention as tinycompress).
+ ****************************************************************************/
+
+static int set_capture_gain(int fd, unsigned int gain)
+{
+  struct audio_caps_desc_s caps_desc;
+
+  memset(&caps_desc, 0, sizeof(caps_desc));
+  caps_desc.caps.ac_len            = sizeof(struct audio_caps_s);
+  caps_desc.caps.ac_type           = AUDIO_TYPE_FEATURE;
+  caps_desc.caps.ac_format.hw      = AUDIO_FU_VOLUME;
+  caps_desc.caps.ac_controls.hw[0] = gain;
+
+  return ioctl(fd, AUDIOIOC_CONFIGURE, &caps_desc);
+}
+
+/****************************************************************************
+ * do_gain — NSH subcommand: audio_test gain <0-1000>
+ ****************************************************************************/
+
+static int do_gain(unsigned int gain)
+{
+  int fd;
+
+  if (gain > 1000)
+    {
+      printf("[gain] usage: audio_test gain <0-1000>\n");
+      return -1;
+    }
+
+  fd = open(DEVICE_CAPT, O_RDONLY);
+  if (fd < 0)
+    {
+      printf("[gain] open err\n");
+      return -1;
+    }
+
+  if (set_capture_gain(fd, gain) < 0)
+    {
+      printf("[gain] ioctl err: %d\n", get_errno());
+      close(fd);
+      return -1;
+    }
+
+  printf("[gain] capture gain set to %u (0..1000)\n", gain);
+  close(fd);
+  return 0;
+}
+
+/****************************************************************************
  * Public Functions
  ****************************************************************************/
 
@@ -544,13 +616,28 @@ int main(int argc, FAR char *argv[])
   unsigned int dur;
 
   cmd = (argc > 1) ? argv[1] : "rec";
+
+  /* gain uses a 0..1000 value, not a duration; handle it before the
+   * duration validation below.
+   */
+
+  if (strcmp(cmd, "gain") == 0)
+    {
+      if (argc < 3)
+        {
+          printf("[audio_test] usage: audio_test gain <0-1000>\n");
+          return -1;
+        }
+      return do_gain((unsigned int)strtoul(argv[2], NULL, 0));
+    }
+
   dur = (argc > 2) ? (unsigned int)strtoul(argv[2], NULL, 0) : DEFAULT_DURATION_MS;
   if (dur == 0 || dur > 30000)
     { printf("[audio_test] ERROR: duration\n"); return -1; }
 
   if (strcmp(cmd, "tone") == 0) return do_tone(dur);
   if (strcmp(cmd, "rec") == 0)  return do_record(dur);
-  printf("[audio_test] usage: audio_test [rec|tone] [ms]\n");
+  printf("[audio_test] usage: audio_test [rec|tone|gain <0-1000>] [ms]\n");
   printf("[audio_test] recording saved to %s (use `sz` to download)\n",
          REC_FILE);
   return -1;

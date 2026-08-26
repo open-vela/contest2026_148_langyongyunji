@@ -17,6 +17,7 @@
 #include <mqueue.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/ioctl.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -26,6 +27,13 @@
 #define VG_AUDIO_SPEECH_MEAN_ABS 200
 #define VG_AUDIO_SPEECH_PEAK     700
 #define VG_AUDIO_MAX_BUFS        4
+
+/* Application-level capture gain: the driver defaults to +30 dB (volume
+ * 1000); back off 3 dB to +27 dB to avoid clipping on loud speech.
+ * Volume uses the OpenVela 0..1000 convention.
+ */
+
+#define REC_CAPTURE_GAIN         967     /* +27 dB */
 
 static int g_vg_audio_fd = -1;
 static mqd_t g_vg_audio_mq = -1;
@@ -63,6 +71,25 @@ static int audio_config(int fd)
   caps.ac_format.hw  = AUDIO_FMT_PCM;
   caps.ac_controls.hw[0] = SAMPLE_RATE;
   return ioctl(fd, AUDIOIOC_CONFIGURE, &caps);
+}
+
+/****************************************************************************
+ * set_capture_gain — set capture (MIC) gain via the standard NuttX/OpenVela
+ * audio interface: AUDIOIOC_CONFIGURE + AUDIO_TYPE_FEATURE + AUDIO_FU_VOLUME.
+ * value is 0..1000 (same convention as tinycompress).
+ ****************************************************************************/
+
+static int set_capture_gain(int fd, unsigned int gain)
+{
+  struct audio_caps_desc_s caps_desc;
+
+  memset(&caps_desc, 0, sizeof(caps_desc));
+  caps_desc.caps.ac_len            = sizeof(struct audio_caps_s);
+  caps_desc.caps.ac_type           = AUDIO_TYPE_FEATURE;
+  caps_desc.caps.ac_format.hw      = AUDIO_FU_VOLUME;
+  caps_desc.caps.ac_controls.hw[0] = gain;
+
+  return ioctl(fd, AUDIOIOC_CONFIGURE, &caps_desc);
 }
 
 /****************************************************************************
@@ -137,6 +164,15 @@ int vg_audio_capture_start(void)
     {
       printf("VelaGuard audio: configure failed\n");
       goto err_close;
+    }
+
+  /* Apply application-level capture gain: driver default +30 dB minus
+   * 3 dB headroom to avoid clipping on loud speech.
+   */
+
+  if (set_capture_gain(g_vg_audio_fd, REC_CAPTURE_GAIN) < 0)
+    {
+      printf("VelaGuard audio: WARNING set capture gain failed\n");
     }
 
   /* Allocate audio buffers. */

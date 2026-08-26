@@ -1,0 +1,88 @@
+diff --git a/chips/sf32lb52/sf32lb_audio.c b/chips/sf32lb52/sf32lb_audio.c
+--- a/chips/sf32lb52/sf32lb_audio.c
++++ b/chips/sf32lb52/sf32lb_audio.c
+@@ -125,6 +125,7 @@
+   apb_samp_t               buffer_num;
+   spinlock_t               lock;
+   int                      samplerate_index;
++  uint16_t                 capture_gain; /* 0..1000, OpenVela volume     */
+ };
+ 
+ /****************************************************************************
+@@ -548,6 +549,20 @@
+ }
+ 
+ /****************************************************************************
++ * Name: sf32lb_capture_gain_to_db
++ *
++ * Description:
++ *   Map the OpenVela/NuttX volume convention (0..1000) onto the SF32LB52
++ *   codec ADC path gain range (-60..+30 dB).  1000 -> +30 dB (max).
++ *
++ ****************************************************************************/
++
++static int sf32lb_capture_gain_to_db(uint16_t vol)
++{
++  return ((int)vol * 90 / 1000) - 60;
++}
++
++/****************************************************************************
+  * Name: sf32lb_audio_configure
+  ****************************************************************************/
+ 
+@@ -618,6 +633,28 @@
+                 (unsigned long)samplerate, index);
+         return OK;
+ 
++      case AUDIO_TYPE_FEATURE:
++        if (priv->playback || caps->ac_format.hw != AUDIO_FU_VOLUME)
++          {
++            return -ENOTTY;
++          }
++
++        /* OpenVela standard volume control (tinycompress convention):
++         * ac_controls.hw[0] holds 0..1000, mapped to -60..+30 dB.
++         */
++
++        priv->capture_gain = caps->ac_controls.hw[0];
++        if (priv->running)
++          {
++            HAL_AUDCODEC_Config_ADCPath_Volume(&g_haudcodec, 0,
++                    sf32lb_capture_gain_to_db(priv->capture_gain));
++          }
++
++        audinfo("capture gain=%u (%d dB)\n",
++                priv->capture_gain,
++                sf32lb_capture_gain_to_db(priv->capture_gain));
++        return OK;
++
+       default:
+         return -ENOTTY;
+     }
+@@ -723,7 +760,8 @@
+ 
+       HAL_AUDCODEC_Config_RChanel(&g_haudcodec, 0,
+                                   &g_haudcodec.Init.adc_cfg);
+-      HAL_AUDCODEC_Config_ADCPath_Volume(&g_haudcodec, 0, 12);
++      HAL_AUDCODEC_Config_ADCPath_Volume(&g_haudcodec, 0,
++              sf32lb_capture_gain_to_db(priv->capture_gain));
+ 
+       if (HAL_AUDCODEC_Receive_DMA(&g_haudcodec, priv->alloc_addr, size,
+                                     HAL_AUDCODEC_ADC_CH0) != HAL_OK)
+@@ -1148,7 +1186,15 @@
+   if (priv->playback)
+     g_playback_priv = priv;
+   else
+-    g_capture_priv = priv;
++    {
++      /* Default to maximum capture gain (+30 dB); can be lowered at
++       * runtime via AUDIOIOC_CONFIGURE + AUDIO_TYPE_FEATURE +
++       * AUDIO_FU_VOLUME (OpenVela standard volume convention).
++       */
++
++      priv->capture_gain = 1000;
++      g_capture_priv = priv;
++    }
+ 
+   return priv;
+ }
