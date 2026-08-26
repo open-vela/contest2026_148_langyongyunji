@@ -9,6 +9,8 @@
  *   audio_test rec [ms]      Record for <ms> then playback
  *   audio_test tone [ms]     Play a 1 kHz tone
  *
+ * The recording is saved as a 16 kHz/16-bit/mono WAV file at
+ * /data/audio_test_rec.wav; pull it to a PC with `sz /data/audio_test_rec.wav`.
  ****************************************************************************/
 
 #include <nuttx/config.h>
@@ -24,6 +26,7 @@
 #include <unistd.h>
 
 #include <nuttx/audio/audio.h>
+#include <nuttx/audio/pcm.h>
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -35,6 +38,7 @@
 #define DEFAULT_DURATION_MS  3000
 #define TONE_FREQ            1000
 #define MQ_NAME              "audio_test_mq"
+#define REC_FILE             "/data/audio_test_rec.wav"
 
 /****************************************************************************
  * Private Functions
@@ -63,7 +67,6 @@ static int do_tone(unsigned int duration_ms)
   struct ap_buffer_s *bufs[4];
   mqd_t mq;
   struct mq_attr attr;
-  struct sigevent event;
   FAR int16_t *samp;
   unsigned int nbufs, bufsize, allocated;
   unsigned int i, n, total_samp, done = 0;
@@ -171,6 +174,56 @@ err_free_bufs:
 err_close:
   close(fd);
   return ret;
+}
+
+/****************************************************************************
+ * save_rec_wav — write recorded PCM (16 kHz / 16-bit / mono) as a WAV file
+ ****************************************************************************/
+
+static int save_rec_wav(const char *path, FAR int16_t *data,
+                        unsigned int nsamp)
+{
+  struct wav_header_s hdr;
+  uint32_t data_size = nsamp * sizeof(int16_t);
+  int fd;
+  ssize_t nw;
+
+  fd = open(path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+  if (fd < 0) { printf("[record] ERROR open %s\n", path); return -1; }
+
+  memset(&hdr, 0, sizeof(hdr));
+  hdr.hdr.chunkid    = WAV_HDR_CHUNKID;      /* "RIFF" */
+  hdr.hdr.chunklen   = 36 + data_size;
+  hdr.hdr.format     = WAV_HDR_FORMAT;       /* "WAVE" */
+  hdr.fmt.chunkid    = WAV_FMT_CHUNKID;      /* "fmt " */
+  hdr.fmt.chunklen   = WAV_FMT_CHUNKLEN;     /* 16 */
+  hdr.fmt.format     = WAV_FMT_FORMAT;       /* PCM */
+  hdr.fmt.nchannels  = 1;                    /* mono */
+  hdr.fmt.samprate   = SAMPLE_RATE;
+  hdr.fmt.byterate   = SAMPLE_RATE * sizeof(int16_t);
+  hdr.fmt.align      = sizeof(int16_t);
+  hdr.fmt.bpsamp     = 16;
+  hdr.data.chunkid   = WAV_DATA_CHUNKID;     /* "data" */
+  hdr.data.chunklen  = data_size;
+
+  nw = write(fd, &hdr, sizeof(hdr));
+  if (nw != (ssize_t)sizeof(hdr))
+    {
+      printf("[record] ERROR write wav header\n");
+      close(fd);
+      return -1;
+    }
+
+  nw = write(fd, data, data_size);
+  if (nw != (ssize_t)data_size)
+    {
+      printf("[record] ERROR write wav data\n");
+      close(fd);
+      return -1;
+    }
+
+  close(fd);
+  return 0;
 }
 
 /****************************************************************************
@@ -295,6 +348,13 @@ static int do_record(unsigned int duration_ms)
   ioctl(fd, AUDIOIOC_STOP, 0);
   printf("[record] captured %u samples (%u ms)\n",
          rec_samp, rec_samp * 1000 / SAMPLE_RATE);
+
+  /* Save recording to file system so it can be pulled via `sz` */
+  if (save_rec_wav(REC_FILE, rec_data, rec_samp) < 0)
+    printf("[record] WARNING: failed to save %s\n", REC_FILE);
+  else
+    printf("[record] saved %s -- run `sz %s` to download to PC\n",
+           REC_FILE, REC_FILE);
 
   /* Diagnostic */
   {
@@ -491,5 +551,7 @@ int main(int argc, FAR char *argv[])
   if (strcmp(cmd, "tone") == 0) return do_tone(dur);
   if (strcmp(cmd, "rec") == 0)  return do_record(dur);
   printf("[audio_test] usage: audio_test [rec|tone] [ms]\n");
+  printf("[audio_test] recording saved to %s (use `sz` to download)\n",
+         REC_FILE);
   return -1;
 }
