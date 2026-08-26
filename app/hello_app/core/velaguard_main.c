@@ -24,6 +24,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+
 #include <unistd.h>
 
 #ifdef CONFIG_INPUT_BUTTONS
@@ -32,13 +33,83 @@
 
 #include <lvgl/lvgl.h>
 
+extern const lv_image_dsc_t velaguard_img_bg_alarm;
+extern const lv_image_dsc_t velaguard_img_ble_icon;
+extern const lv_image_dsc_t velaguard_img_fall_icon;
+extern const lv_image_dsc_t velaguard_img_alarm_clock_0;
+extern const lv_image_dsc_t velaguard_img_count_0;
+extern const lv_image_dsc_t velaguard_img_count_1;
+extern const lv_image_dsc_t velaguard_img_count_2;
+extern const lv_image_dsc_t velaguard_img_count_3;
+extern const lv_image_dsc_t velaguard_img_count_4;
+extern const lv_image_dsc_t velaguard_img_count_5;
+extern const lv_image_dsc_t velaguard_img_count_6;
+extern const lv_image_dsc_t velaguard_img_count_7;
+extern const lv_image_dsc_t velaguard_img_count_8;
+extern const lv_image_dsc_t velaguard_img_count_9;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_bg;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_battery_5;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_white_0;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_white_1;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_white_2;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_white_3;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_white_4;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_white_5;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_white_6;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_white_7;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_white_8;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_white_9;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_blue_0;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_blue_1;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_blue_2;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_blue_3;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_blue_4;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_blue_5;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_blue_6;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_blue_7;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_blue_8;
+extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_blue_9;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_illustration;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_colon;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_battery_5;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_hour_0;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_hour_1;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_hour_2;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_hour_3;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_hour_4;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_hour_5;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_hour_6;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_hour_7;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_hour_8;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_hour_9;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_date_0;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_date_1;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_date_2;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_date_3;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_date_4;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_date_5;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_date_6;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_date_7;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_date_8;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_date_9;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_date_slash;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_week_0;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_week_1;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_week_2;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_week_3;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_week_4;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_week_5;
+extern const lv_image_dsc_t velaguard_img_icon_touch_future_week_6;
+extern const lv_image_dsc_t velaguard_img_thumb_rainbow_rain;
+extern const lv_image_dsc_t velaguard_img_thumb_touch_future;
+
 #include "velaguard_fall.h"
 #include "velaguard_imu.h"
 #include "velaguard_ble.h"
 #include "velaguard_audio.h"
 #include "velaguard_audio_feedback.h"
 
-LV_FONT_DECLARE(velaguard_font_18);
+LV_FONT_DECLARE(velaguard_font_30);
 
 /****************************************************************************
  * Pre-processor Definitions
@@ -93,13 +164,22 @@ LV_FONT_DECLARE(velaguard_font_18);
 #define VG_COLOR_WARN        0xf0a33a
 #define VG_COLOR_ALERT       0xe84d5b
 #define VG_COLOR_INFO        0x3d8bfd
-#define VG_TICK_PERIOD_MS    250
+#define VG_TICK_PERIOD_MS    10
 #define VG_IMU_UI_PERIOD_MS  100
 #define VG_SOS_BUTTON_BIT    ((btn_buttonset_t)1 << 0) /* PA43 / KEY2 */
 #define VG_DEVICE_WAIT_STEP_MS 100
 #define VG_DEVICE_WAIT_MS      5000
 #define VG_VOICE_REARM_MS       3000
 #define VG_BLE_INIT_STACKSIZE   16384
+#define VG_BASE_W               240
+#define VG_BASE_H               280
+#define VG_SCREEN_W             390
+#define VG_SCREEN_H             450
+#define VG_X(v)                 ((int32_t)(((v) * VG_SCREEN_W + VG_BASE_W / 2) / VG_BASE_W))
+#define VG_Y(v)                 ((int32_t)(((v) * VG_SCREEN_H + VG_BASE_H / 2) / VG_BASE_H))
+#define VG_SOS_LONG_MS          1200
+#define VG_HOLD_CONFIRM_MS      3000
+#define VG_ALARM_FRAME_COUNT    1
 
 /****************************************************************************
  * Private Types
@@ -131,6 +211,12 @@ enum vg_action_e
   VG_ACTION_RESOLVE,
   VG_ACTION_HISTORY,
   VG_ACTION_SETTINGS,
+  VG_ACTION_BLUETOOTH,
+  VG_ACTION_BLE_TOGGLE,
+  VG_ACTION_FALL_CANCEL_HOLD,
+  VG_ACTION_FALL_CONFIRM_HOLD,
+  VG_ACTION_DIAL_RAINBOW,
+  VG_ACTION_DIAL_SIMPLE,
   VG_ACTION_MODE,
   VG_ACTION_BACK,
 };
@@ -166,7 +252,9 @@ struct vg_app_s
   int history_count;
   int history_head;
   int countdown;
+  int countdown_total;
   int tick_accum_ms;
+  int countdown_last_value;
   int imu_mag_mg;
   int imu_gyro_dps;
   int imu_last_error;
@@ -175,11 +263,39 @@ struct vg_app_s
   uint32_t audio_sequence;
   uint32_t audio_report_tick;
   uint64_t voice_last_trigger_ms;
+  uint64_t button_down_ms;
+  uint64_t countdown_start_ms;
+  uint64_t ble_toggle_last_ms;
+  uint64_t hold_cancel_start_ms;
+  uint64_t hold_confirm_start_ms;
+  enum vg_action_e hold_action;
+  int hold_last_value;
   bool audio_ready;
   uint32_t next_id;
   bool has_fall_result;
   bool imu_ready;
+  bool button_long_handled;
+  bool sos_prompt_visible;
+  bool hold_cancel_active;
+  bool hold_confirm_active;
+  uint8_t watchface;
+  int home_last_minute;
+  int home_last_mday;
+  int alarm_frame;
   lv_obj_t *countdown_label;
+  lv_obj_t *countdown_arc;
+  lv_obj_t *countdown_single_img;
+  lv_obj_t *countdown_tens_img;
+  lv_obj_t *countdown_ones_img;
+  lv_obj_t *hold_overlay;
+  lv_obj_t *hold_arc;
+  lv_obj_t *hold_digit_img;
+  lv_obj_t *alarm_img;
+  lv_obj_t *home_time_img[4];
+  lv_obj_t *home_date_img[4];
+  lv_obj_t *home_week_img;
+  lv_obj_t *home_date_label;
+  lv_obj_t *home_week_label;
   lv_obj_t *detail_label;
   lv_obj_t *imu_status_label;
   lv_obj_t *imu_value_label;
@@ -199,12 +315,22 @@ struct vg_app_s
 static void vg_render_home(void);
 static void vg_render_prealert(void);
 static void vg_render_alert(void);
+static void vg_render_sos_prompt(void);
 static void vg_render_history(void);
 static void vg_render_settings(void);
+static void vg_render_bluetooth(void);
+static void vg_render_watchface_picker(void);
 static void vg_render_current(void);
 static void vg_set_font(lv_obj_t *obj);
 static void vg_trigger_fall_result(const struct vg_fall_result_s *result);
+static void vg_start_prealert(enum vg_event_type_e type, int countdown,
+                              int risk, int confidence);
 static void vg_update_imu_labels(void);
+static void vg_update_watchface_time(void);
+static void vg_update_countdown_visuals(void);
+static void vg_update_alarm_hold(void);
+static void vg_render_fall_hold_progress(enum vg_action_e action);
+static void vg_update_hold_progress_visuals(uint64_t now);
 static void vg_audio_process(void);
 static int vg_ble_init_task(int argc, char *argv[]);
 
@@ -213,6 +339,103 @@ static int vg_ble_init_task(int argc, char *argv[]);
  ****************************************************************************/
 
 static struct vg_app_s g_vg;
+
+static const lv_image_dsc_t *g_alarm_frames[VG_ALARM_FRAME_COUNT] =
+{
+  &velaguard_img_alarm_clock_0,
+};
+
+static const lv_image_dsc_t *g_count_digits[10] =
+{
+  &velaguard_img_count_0,
+  &velaguard_img_count_1,
+  &velaguard_img_count_2,
+  &velaguard_img_count_3,
+  &velaguard_img_count_4,
+  &velaguard_img_count_5,
+  &velaguard_img_count_6,
+  &velaguard_img_count_7,
+  &velaguard_img_count_8,
+  &velaguard_img_count_9,
+};
+
+static const char *g_week_names[7] =
+{
+  "周日",
+  "周一",
+  "周二",
+  "周三",
+  "周四",
+  "周五",
+  "周六",
+};
+
+static const lv_image_dsc_t *g_rainbow_white_digits[10] =
+{
+  &velaguard_img_icon_rainbow_rain_white_0,
+  &velaguard_img_icon_rainbow_rain_white_1,
+  &velaguard_img_icon_rainbow_rain_white_2,
+  &velaguard_img_icon_rainbow_rain_white_3,
+  &velaguard_img_icon_rainbow_rain_white_4,
+  &velaguard_img_icon_rainbow_rain_white_5,
+  &velaguard_img_icon_rainbow_rain_white_6,
+  &velaguard_img_icon_rainbow_rain_white_7,
+  &velaguard_img_icon_rainbow_rain_white_8,
+  &velaguard_img_icon_rainbow_rain_white_9,
+};
+
+static const lv_image_dsc_t *g_rainbow_blue_digits[10] =
+{
+  &velaguard_img_icon_rainbow_rain_blue_0,
+  &velaguard_img_icon_rainbow_rain_blue_1,
+  &velaguard_img_icon_rainbow_rain_blue_2,
+  &velaguard_img_icon_rainbow_rain_blue_3,
+  &velaguard_img_icon_rainbow_rain_blue_4,
+  &velaguard_img_icon_rainbow_rain_blue_5,
+  &velaguard_img_icon_rainbow_rain_blue_6,
+  &velaguard_img_icon_rainbow_rain_blue_7,
+  &velaguard_img_icon_rainbow_rain_blue_8,
+  &velaguard_img_icon_rainbow_rain_blue_9,
+};
+
+static const lv_image_dsc_t *g_touch_hour_digits[10] =
+{
+  &velaguard_img_icon_touch_future_hour_0,
+  &velaguard_img_icon_touch_future_hour_1,
+  &velaguard_img_icon_touch_future_hour_2,
+  &velaguard_img_icon_touch_future_hour_3,
+  &velaguard_img_icon_touch_future_hour_4,
+  &velaguard_img_icon_touch_future_hour_5,
+  &velaguard_img_icon_touch_future_hour_6,
+  &velaguard_img_icon_touch_future_hour_7,
+  &velaguard_img_icon_touch_future_hour_8,
+  &velaguard_img_icon_touch_future_hour_9,
+};
+
+static const lv_image_dsc_t *g_touch_date_digits[10] =
+{
+  &velaguard_img_icon_touch_future_date_0,
+  &velaguard_img_icon_touch_future_date_1,
+  &velaguard_img_icon_touch_future_date_2,
+  &velaguard_img_icon_touch_future_date_3,
+  &velaguard_img_icon_touch_future_date_4,
+  &velaguard_img_icon_touch_future_date_5,
+  &velaguard_img_icon_touch_future_date_6,
+  &velaguard_img_icon_touch_future_date_7,
+  &velaguard_img_icon_touch_future_date_8,
+  &velaguard_img_icon_touch_future_date_9,
+};
+
+static const lv_image_dsc_t *g_touch_week_digits[7] =
+{
+  &velaguard_img_icon_touch_future_week_0,
+  &velaguard_img_icon_touch_future_week_1,
+  &velaguard_img_icon_touch_future_week_2,
+  &velaguard_img_icon_touch_future_week_3,
+  &velaguard_img_icon_touch_future_week_4,
+  &velaguard_img_icon_touch_future_week_5,
+  &velaguard_img_icon_touch_future_week_6,
+};
 
 static int vg_ble_init_task(int argc, char *argv[])
 {
@@ -422,6 +645,16 @@ static void vg_confirm_alert(void)
     }
 
   g_vg.state = VG_STATE_ALERTING;
+  g_vg.countdown = 0;
+  g_vg.countdown_total = 0;
+  g_vg.tick_accum_ms = 0;
+  g_vg.countdown_last_value = 0;
+  g_vg.countdown_start_ms = 0;
+  g_vg.sos_prompt_visible = false;
+  g_vg.hold_cancel_active = false;
+  g_vg.hold_confirm_active = false;
+  g_vg.hold_action = 0;
+  g_vg.hold_last_value = -1;
   g_vg.active.timestamp_ms = vg_uptime_ms();
   vg_make_summary(&g_vg.active, "alert");
   vg_history_push(&g_vg.active);
@@ -450,12 +683,17 @@ static void vg_confirm_alert(void)
 
 static void vg_trigger_event(enum vg_event_type_e type)
 {
-  int risk = 3;
   int confidence = 88;
 
   g_vg.has_fall_result = false;
 
-  if (type == VG_EVENT_MANUAL_SOS || type == VG_EVENT_VOICE)
+  if (type == VG_EVENT_MANUAL_SOS)
+    {
+      vg_start_prealert(VG_EVENT_MANUAL_SOS, 5, 4, 100);
+      return;
+    }
+
+  if (type == VG_EVENT_VOICE)
     {
       vg_prepare_event(type, 4,
                        type == VG_EVENT_MANUAL_SOS ? 100 : 92, "alert");
@@ -483,14 +721,37 @@ static void vg_trigger_event(enum vg_event_type_e type)
       return;
     }
 
+  if (type == VG_EVENT_FALL)
+    {
+      vg_start_prealert(VG_EVENT_FALL, 30, 3, confidence);
+      return;
+    }
+
   if (type == VG_EVENT_SOUND)
     {
       confidence = 76;
     }
+
+  vg_start_prealert(type, CONFIG_CONTEST2026_148_VELAGUARD_COUNTDOWN,
+                    3, confidence);
+}
+
+static void vg_start_prealert(enum vg_event_type_e type, int countdown,
+                              int risk, int confidence)
+{
   vg_prepare_event(type, risk, confidence, "suspected");
   g_vg.state = VG_STATE_PREALERT;
-  g_vg.countdown = CONFIG_CONTEST2026_148_VELAGUARD_COUNTDOWN;
+  g_vg.countdown = countdown;
+  g_vg.countdown_total = countdown;
   g_vg.tick_accum_ms = 0;
+  g_vg.countdown_last_value = countdown;
+  g_vg.countdown_start_ms = vg_uptime_ms();
+  g_vg.sos_prompt_visible = false;
+  g_vg.hold_cancel_active = false;
+  g_vg.hold_confirm_active = false;
+  g_vg.hold_action = 0;
+  g_vg.hold_last_value = -1;
+  g_vg.alarm_frame = 0;
   vg_emit_json(&g_vg.active);
   vg_render_prealert();
 }
@@ -511,7 +772,8 @@ static void vg_popup_close_cb(lv_event_t *event)
     }
 }
 
-static void vg_show_fall_popup(const struct vg_fall_result_s *result)
+static void __attribute__((unused))
+vg_show_fall_popup(const struct vg_fall_result_s *result)
 {
   lv_obj_t *mbox;
   lv_obj_t *obj;
@@ -550,14 +812,7 @@ static void vg_trigger_fall_result(const struct vg_fall_result_s *result)
   g_vg.last_fall = *result;
   g_vg.has_fall_result = true;
 
-  vg_prepare_event(VG_EVENT_FALL, result->risk, result->confidence,
-                   "suspected");
-  g_vg.state = VG_STATE_PREALERT;
-  g_vg.countdown = CONFIG_CONTEST2026_148_VELAGUARD_COUNTDOWN;
-  g_vg.tick_accum_ms = 0;
-  vg_emit_json(&g_vg.active);
-  vg_render_prealert();
-  vg_show_fall_popup(result);
+  vg_start_prealert(VG_EVENT_FALL, 30, result->risk, result->confidence);
 }
 
 static void vg_cancel_event(void)
@@ -576,6 +831,16 @@ static void vg_cancel_event(void)
 
   g_vg.state = VG_STATE_GUARDING;
   g_vg.tick_accum_ms = 0;
+  g_vg.countdown = 0;
+  g_vg.countdown_total = 0;
+  g_vg.countdown_last_value = 0;
+  g_vg.countdown_start_ms = 0;
+  g_vg.has_fall_result = false;
+  g_vg.sos_prompt_visible = false;
+  g_vg.hold_cancel_active = false;
+  g_vg.hold_confirm_active = false;
+  g_vg.hold_action = 0;
+  g_vg.hold_last_value = -1;
   vg_render_home();
 }
 
@@ -590,12 +855,23 @@ static void vg_resolve_event(void)
 
   g_vg.state = VG_STATE_GUARDING;
   g_vg.tick_accum_ms = 0;
+  g_vg.countdown = 0;
+  g_vg.countdown_total = 0;
+  g_vg.countdown_last_value = 0;
+  g_vg.countdown_start_ms = 0;
+  g_vg.has_fall_result = false;
+  g_vg.sos_prompt_visible = false;
+  g_vg.hold_cancel_active = false;
+  g_vg.hold_confirm_active = false;
+  g_vg.hold_action = 0;
+  g_vg.hold_last_value = -1;
   vg_render_home();
 }
 
 static lv_obj_t *vg_screen_reset(void)
 {
   lv_obj_t *scr = lv_screen_active();
+  int i;
 
   lv_obj_clean(scr);
   lv_obj_set_style_bg_color(scr, lv_color_hex(VG_COLOR_BG), LV_PART_MAIN);
@@ -603,6 +879,23 @@ static lv_obj_t *vg_screen_reset(void)
                               LV_PART_MAIN);
   lv_obj_clear_flag(scr, LV_OBJ_FLAG_SCROLLABLE);
   g_vg.countdown_label = NULL;
+  g_vg.countdown_arc = NULL;
+  g_vg.countdown_single_img = NULL;
+  g_vg.countdown_tens_img = NULL;
+  g_vg.countdown_ones_img = NULL;
+  g_vg.hold_overlay = NULL;
+  g_vg.hold_arc = NULL;
+  g_vg.hold_digit_img = NULL;
+  g_vg.alarm_img = NULL;
+  for (i = 0; i < 4; i++)
+    {
+      g_vg.home_time_img[i] = NULL;
+      g_vg.home_date_img[i] = NULL;
+    }
+
+  g_vg.home_week_img = NULL;
+  g_vg.home_date_label = NULL;
+  g_vg.home_week_label = NULL;
   g_vg.detail_label = NULL;
   g_vg.imu_status_label = NULL;
   g_vg.imu_value_label = NULL;
@@ -613,7 +906,7 @@ static lv_obj_t *vg_screen_reset(void)
 
 static void vg_set_font(lv_obj_t *obj)
 {
-  lv_obj_set_style_text_font(obj, &velaguard_font_18, LV_PART_MAIN);
+  lv_obj_set_style_text_font(obj, &velaguard_font_30, LV_PART_MAIN);
 }
 
 static lv_obj_t *vg_label(lv_obj_t *parent, const char *text, int32_t width,
@@ -629,6 +922,122 @@ static lv_obj_t *vg_label(lv_obj_t *parent, const char *text, int32_t width,
   lv_obj_set_style_text_color(label, lv_color_hex(color), LV_PART_MAIN);
 
   return label;
+}
+
+static lv_obj_t *vg_fixed_root(lv_obj_t *scr)
+{
+  lv_obj_t *root = lv_obj_create(scr);
+
+  lv_obj_set_size(root, VG_SCREEN_W, VG_SCREEN_H);
+  lv_obj_align(root, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_set_style_bg_opa(root, LV_OPA_TRANSP, LV_PART_MAIN);
+  lv_obj_set_style_border_width(root, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(root, 0, LV_PART_MAIN);
+  lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+
+  return root;
+}
+
+static lv_obj_t *vg_image_at(lv_obj_t *parent,
+                             const lv_image_dsc_t *src,
+                             int32_t x, int32_t y)
+{
+  lv_obj_t *img = lv_image_create(parent);
+
+  lv_image_set_src(img, src);
+  lv_obj_align(img, LV_ALIGN_TOP_LEFT, x, y);
+
+  return img;
+}
+
+static lv_obj_t *vg_round_band(lv_obj_t *parent, int32_t x, int32_t y,
+                               int32_t w, int32_t h, uint32_t color,
+                               const char *text)
+{
+  lv_obj_t *band;
+  lv_obj_t *label;
+
+  band = lv_obj_create(parent);
+  lv_obj_set_size(band, w, h);
+  lv_obj_align(band, LV_ALIGN_TOP_LEFT, x, y);
+  lv_obj_set_style_bg_color(band, lv_color_hex(color), LV_PART_MAIN);
+  lv_obj_set_style_border_width(band, 0, LV_PART_MAIN);
+  lv_obj_set_style_radius(band, h / 2, LV_PART_MAIN);
+  lv_obj_clear_flag(band, LV_OBJ_FLAG_SCROLLABLE);
+
+  label = lv_label_create(band);
+  vg_set_font(label);
+  lv_label_set_text(label, text);
+  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+  lv_obj_set_style_text_color(label, lv_color_hex(VG_COLOR_TEXT),
+                              LV_PART_MAIN);
+  lv_obj_center(label);
+
+  return band;
+}
+
+static void vg_home_event_cb(lv_event_t *event)
+{
+  lv_event_code_t code = lv_event_get_code(event);
+
+  if (code == LV_EVENT_LONG_PRESSED)
+    {
+      vg_render_watchface_picker();
+    }
+  else if (code == LV_EVENT_GESTURE)
+    {
+      lv_indev_t *indev = lv_indev_active();
+      lv_dir_t dir = indev == NULL ? LV_DIR_NONE :
+                     lv_indev_get_gesture_dir(indev);
+
+      if (dir == LV_DIR_LEFT || dir == LV_DIR_RIGHT)
+        {
+          vg_render_bluetooth();
+        }
+    }
+}
+
+static void vg_bluetooth_event_cb(lv_event_t *event)
+{
+  if (lv_event_get_code(event) == LV_EVENT_GESTURE)
+    {
+      lv_indev_t *indev = lv_indev_active();
+      lv_dir_t dir = indev == NULL ? LV_DIR_NONE :
+                     lv_indev_get_gesture_dir(indev);
+
+      if (dir == LV_DIR_LEFT || dir == LV_DIR_RIGHT)
+        {
+          vg_render_home();
+        }
+    }
+}
+
+static void vg_ble_toggle_event_cb(lv_event_t *event)
+{
+  lv_event_code_t code = lv_event_get_code(event);
+  uint64_t now;
+  int ret;
+
+  if (code != LV_EVENT_PRESSED &&
+      code != LV_EVENT_CLICKED &&
+      code != LV_EVENT_RELEASED)
+    {
+      return;
+    }
+
+  lv_event_stop_bubbling(event);
+  now = vg_uptime_ms();
+  if (g_vg.ble_toggle_last_ms != 0 &&
+      now - g_vg.ble_toggle_last_ms < 200)
+    {
+      return;
+    }
+
+  g_vg.ble_toggle_last_ms = now;
+  ret = vg_ble_set_enabled(!vg_ble_is_enabled());
+  printf("VelaGuard UI: BLE toggle enabled=%d ret=%d\n",
+         vg_ble_is_enabled() ? 1 : 0, ret);
+  vg_render_bluetooth();
 }
 
 static lv_obj_t *vg_action_button(lv_obj_t *parent, const char *text,
@@ -686,6 +1095,29 @@ static void vg_action_cb(lv_event_t *event)
         vg_render_settings();
         break;
 
+      case VG_ACTION_BLUETOOTH:
+        vg_render_bluetooth();
+        break;
+
+      case VG_ACTION_BLE_TOGGLE:
+        vg_ble_set_enabled(!vg_ble_is_enabled());
+        vg_render_bluetooth();
+        break;
+
+      case VG_ACTION_FALL_CANCEL_HOLD:
+      case VG_ACTION_FALL_CONFIRM_HOLD:
+        break;
+
+      case VG_ACTION_DIAL_RAINBOW:
+        g_vg.watchface = 0;
+        vg_render_home();
+        break;
+
+      case VG_ACTION_DIAL_SIMPLE:
+        g_vg.watchface = 1;
+        vg_render_home();
+        break;
+
       case VG_ACTION_MODE:
         g_vg.mode = (g_vg.mode + 1) % 4;
         vg_render_settings();
@@ -718,8 +1150,120 @@ static lv_obj_t *vg_action_button(lv_obj_t *parent, const char *text,
   label = lv_label_create(btn);
   vg_set_font(label);
   lv_label_set_text(label, text);
+  lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(label, w - 8);
+  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
   lv_obj_set_style_text_color(label, lv_color_hex(VG_COLOR_TEXT),
                               LV_PART_MAIN);
+  lv_obj_center(label);
+
+  return btn;
+}
+
+static void vg_hold_button_cb(lv_event_t *event)
+{
+  enum vg_action_e action;
+  lv_event_code_t code = lv_event_get_code(event);
+
+  action = (enum vg_action_e)(uintptr_t)lv_event_get_user_data(event);
+
+  if (code == LV_EVENT_PRESSED)
+    {
+      if (action == VG_ACTION_FALL_CANCEL_HOLD)
+        {
+          g_vg.hold_cancel_start_ms = vg_uptime_ms();
+          g_vg.hold_cancel_active = true;
+          g_vg.hold_action = action;
+          g_vg.hold_last_value = -1;
+          vg_render_fall_hold_progress(action);
+        }
+      else if (action == VG_ACTION_FALL_CONFIRM_HOLD)
+        {
+          g_vg.hold_confirm_start_ms = vg_uptime_ms();
+          g_vg.hold_confirm_active = true;
+          g_vg.hold_action = action;
+          g_vg.hold_last_value = -1;
+          vg_render_fall_hold_progress(action);
+        }
+
+      lv_event_stop_bubbling(event);
+    }
+  else if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST)
+    {
+      uint64_t now = vg_uptime_ms();
+      bool completed = false;
+
+      if (action == VG_ACTION_FALL_CANCEL_HOLD)
+        {
+          completed = g_vg.hold_cancel_active &&
+                      now - g_vg.hold_cancel_start_ms >=
+                      VG_HOLD_CONFIRM_MS;
+          g_vg.hold_cancel_active = false;
+        }
+      else if (action == VG_ACTION_FALL_CONFIRM_HOLD)
+        {
+          completed = g_vg.hold_confirm_active &&
+                      now - g_vg.hold_confirm_start_ms >=
+                      VG_HOLD_CONFIRM_MS;
+          g_vg.hold_confirm_active = false;
+        }
+
+      g_vg.hold_action = 0;
+      g_vg.hold_last_value = -1;
+      if (completed)
+        {
+          if (action == VG_ACTION_FALL_CANCEL_HOLD)
+            {
+              vg_cancel_event();
+            }
+          else if (action == VG_ACTION_FALL_CONFIRM_HOLD)
+            {
+              vg_confirm_alert();
+            }
+
+          lv_event_stop_bubbling(event);
+          return;
+        }
+
+      if (g_vg.state == VG_STATE_PREALERT &&
+          g_vg.active.type == VG_EVENT_FALL &&
+          g_vg.hold_overlay != NULL)
+        {
+          vg_render_alert();
+        }
+
+      lv_event_stop_bubbling(event);
+    }
+}
+
+static lv_obj_t *vg_hold_button(lv_obj_t *parent, const char *text,
+                                int32_t x, int32_t y, int32_t w,
+                                int32_t h, uint32_t bg, uint32_t fg,
+                                enum vg_action_e action)
+{
+  lv_obj_t *btn;
+  lv_obj_t *label;
+
+  btn = lv_button_create(parent);
+  lv_obj_set_size(btn, w, h);
+  lv_obj_align(btn, LV_ALIGN_TOP_LEFT, x, y);
+  lv_obj_set_style_bg_color(btn, lv_color_hex(bg), LV_PART_MAIN);
+  lv_obj_set_style_radius(btn, 2, LV_PART_MAIN);
+  lv_obj_set_style_border_width(btn, 0, LV_PART_MAIN);
+  lv_obj_add_event_cb(btn, vg_hold_button_cb, LV_EVENT_PRESSED,
+                      (void *)(uintptr_t)action);
+  lv_obj_add_event_cb(btn, vg_hold_button_cb, LV_EVENT_RELEASED,
+                      (void *)(uintptr_t)action);
+  lv_obj_add_event_cb(btn, vg_hold_button_cb, LV_EVENT_PRESS_LOST,
+                      (void *)(uintptr_t)action);
+
+  label = lv_label_create(btn);
+  vg_set_font(label);
+  lv_label_set_text(label, text);
+  lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+  lv_obj_set_width(label, w - 8);
+  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+  lv_obj_set_style_text_color(label, lv_color_hex(fg), LV_PART_MAIN);
   lv_obj_center(label);
 
   return btn;
@@ -753,116 +1297,483 @@ static void vg_render_header(lv_obj_t *scr, const char *status,
   lv_obj_center(chip_label);
 }
 
+static void vg_update_watchface_time(void)
+{
+  time_t now;
+  struct tm tm_now;
+  int hour;
+  int minute;
+  int month;
+  int mday;
+  int wday;
+
+  if (g_vg.home_time_img[0] == NULL)
+    {
+      return;
+    }
+
+  now = time(NULL);
+  if (localtime_r(&now, &tm_now) == NULL)
+    {
+      return;
+    }
+
+  if (g_vg.home_last_minute == tm_now.tm_min &&
+      g_vg.home_last_mday == tm_now.tm_mday)
+    {
+      return;
+    }
+
+  hour = tm_now.tm_hour;
+  minute = tm_now.tm_min;
+  month = tm_now.tm_mon + 1;
+  mday = tm_now.tm_mday;
+  wday = tm_now.tm_wday;
+  if (wday < 0 || wday > 6)
+    {
+      wday = 0;
+    }
+
+  if (g_vg.watchface == 0)
+    {
+      lv_image_set_src(g_vg.home_time_img[0],
+                       g_rainbow_white_digits[hour / 10]);
+      lv_image_set_src(g_vg.home_time_img[1],
+                       g_rainbow_white_digits[hour % 10]);
+      lv_image_set_src(g_vg.home_time_img[2],
+                       g_rainbow_blue_digits[minute / 10]);
+      lv_image_set_src(g_vg.home_time_img[3],
+                       g_rainbow_blue_digits[minute % 10]);
+      if (g_vg.home_date_label != NULL)
+        {
+          char date_line[8];
+
+          snprintf(date_line, sizeof(date_line), "%02d/%02d", month, mday);
+          lv_label_set_text(g_vg.home_date_label, date_line);
+        }
+
+      if (g_vg.home_week_label != NULL)
+        {
+          lv_label_set_text(g_vg.home_week_label, g_week_names[wday]);
+        }
+    }
+  else
+    {
+      lv_image_set_src(g_vg.home_time_img[0],
+                       g_touch_hour_digits[hour / 10]);
+      lv_image_set_src(g_vg.home_time_img[1],
+                       g_touch_hour_digits[hour % 10]);
+      lv_image_set_src(g_vg.home_time_img[2],
+                       g_touch_hour_digits[minute / 10]);
+      lv_image_set_src(g_vg.home_time_img[3],
+                       g_touch_hour_digits[minute % 10]);
+
+      lv_image_set_src(g_vg.home_date_img[0],
+                       g_touch_date_digits[month / 10]);
+      lv_image_set_src(g_vg.home_date_img[1],
+                       g_touch_date_digits[month % 10]);
+      lv_image_set_src(g_vg.home_date_img[2],
+                       g_touch_date_digits[mday / 10]);
+      lv_image_set_src(g_vg.home_date_img[3],
+                       g_touch_date_digits[mday % 10]);
+      lv_image_set_src(g_vg.home_week_img, g_touch_week_digits[wday]);
+    }
+
+  g_vg.home_last_minute = tm_now.tm_min;
+  g_vg.home_last_mday = tm_now.tm_mday;
+}
+
+static void vg_render_sos_prompt(void)
+{
+  lv_obj_t *scr = vg_screen_reset();
+  lv_obj_t *root;
+  lv_obj_t *label;
+
+  lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), LV_PART_MAIN);
+  root = vg_fixed_root(scr);
+  vg_image_at(root, &velaguard_img_bg_alarm, 0, 0);
+  g_vg.alarm_img = vg_image_at(root, g_alarm_frames[0], VG_X(93),
+                                VG_Y(45));
+
+  label = vg_label(root, "发送紧急求助", VG_X(200), LV_TEXT_ALIGN_CENTER,
+                   VG_COLOR_TEXT);
+  lv_obj_align(label, LV_ALIGN_TOP_MID, 0, VG_Y(114));
+
+  vg_round_band(root, VG_X(43), VG_Y(198), VG_X(154), VG_Y(48),
+                0xff5a1f, "请长按求助");
+}
+
+static void vg_update_countdown_visuals(void)
+{
+  char line[16];
+  int value = g_vg.countdown;
+
+  if (value < 0)
+    {
+      value = 0;
+    }
+
+  if (g_vg.countdown_single_img != NULL)
+    {
+      lv_image_set_src(g_vg.countdown_single_img,
+                       g_count_digits[value % 10]);
+    }
+
+  if (g_vg.countdown_tens_img != NULL &&
+      g_vg.countdown_ones_img != NULL)
+    {
+      lv_image_set_src(g_vg.countdown_tens_img,
+                       g_touch_hour_digits[(value / 10) % 10]);
+      lv_image_set_src(g_vg.countdown_ones_img,
+                       g_touch_hour_digits[value % 10]);
+      if (value < 10)
+        {
+          lv_obj_add_flag(g_vg.countdown_tens_img, LV_OBJ_FLAG_HIDDEN);
+          lv_obj_align(g_vg.countdown_ones_img, LV_ALIGN_TOP_LEFT,
+                       VG_X(146), VG_Y(104));
+        }
+      else
+        {
+          lv_obj_clear_flag(g_vg.countdown_tens_img, LV_OBJ_FLAG_HIDDEN);
+          lv_obj_align(g_vg.countdown_ones_img, LV_ALIGN_TOP_LEFT,
+                       VG_X(160), VG_Y(104));
+        }
+    }
+
+  if (g_vg.countdown_label != NULL)
+    {
+      snprintf(line, sizeof(line), "%d秒", value);
+      lv_label_set_text(g_vg.countdown_label, line);
+    }
+}
+
+static void vg_render_fall_hold_progress(enum vg_action_e action)
+{
+  lv_obj_t *scr = lv_screen_active();
+  lv_obj_t *root;
+  lv_obj_t *circle;
+  lv_obj_t *label;
+  uint32_t indicator_color =
+    action == VG_ACTION_FALL_CANCEL_HOLD ? 0xffd447 : 0xff6a22;
+  uint32_t band_color =
+    action == VG_ACTION_FALL_CANCEL_HOLD ? 0x6c5561 : 0x68424d;
+  const char *band_text =
+    action == VG_ACTION_FALL_CANCEL_HOLD ? "我没事" : "正在求助中";
+
+  if (g_vg.hold_overlay != NULL)
+    {
+      lv_obj_delete(g_vg.hold_overlay);
+      g_vg.hold_overlay = NULL;
+    }
+
+  root = lv_obj_create(scr);
+  g_vg.hold_overlay = root;
+  lv_obj_set_size(root, VG_SCREEN_W, VG_SCREEN_H);
+  lv_obj_align(root, LV_ALIGN_CENTER, 0, 0);
+  lv_obj_set_style_bg_color(root, lv_color_hex(0x000000), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(root, LV_OPA_COVER, LV_PART_MAIN);
+  lv_obj_set_style_border_width(root, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_all(root, 0, LV_PART_MAIN);
+  lv_obj_clear_flag(root, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(root, LV_OBJ_FLAG_CLICKABLE);
+
+  vg_image_at(root, &velaguard_img_bg_alarm, 0, 0);
+
+  circle = lv_obj_create(root);
+  lv_obj_set_size(circle, VG_X(132), VG_X(132));
+  lv_obj_align(circle, LV_ALIGN_TOP_MID, 0, VG_Y(46));
+  lv_obj_set_style_bg_color(circle, lv_color_hex(0xa90f20), LV_PART_MAIN);
+  lv_obj_set_style_radius(circle, VG_X(66), LV_PART_MAIN);
+  lv_obj_set_style_border_width(circle, 0, LV_PART_MAIN);
+  lv_obj_clear_flag(circle, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(circle, LV_OBJ_FLAG_CLICKABLE);
+
+  g_vg.hold_arc = lv_arc_create(root);
+  lv_obj_set_size(g_vg.hold_arc, VG_X(142), VG_X(142));
+  lv_obj_align(g_vg.hold_arc, LV_ALIGN_TOP_MID, 0, VG_Y(41));
+  lv_arc_set_range(g_vg.hold_arc, 0, 100);
+  lv_arc_set_value(g_vg.hold_arc, 0);
+  lv_arc_set_bg_angles(g_vg.hold_arc, 0, 360);
+  lv_arc_set_rotation(g_vg.hold_arc, 270);
+  lv_obj_remove_style(g_vg.hold_arc, NULL, LV_PART_KNOB);
+  lv_obj_clear_flag(g_vg.hold_arc, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_set_style_arc_color(g_vg.hold_arc, lv_color_hex(indicator_color),
+                             LV_PART_INDICATOR);
+  lv_obj_set_style_arc_width(g_vg.hold_arc, VG_X(7), LV_PART_INDICATOR);
+  lv_obj_set_style_arc_color(g_vg.hold_arc, lv_color_hex(0x5d0614),
+                             LV_PART_MAIN);
+  lv_obj_set_style_arc_width(g_vg.hold_arc, VG_X(7), LV_PART_MAIN);
+
+  g_vg.hold_digit_img = vg_image_at(root, g_count_digits[3], 0, 0);
+  lv_obj_align(g_vg.hold_digit_img, LV_ALIGN_TOP_MID, 0, VG_Y(59));
+
+  label = vg_label(root, "请勿松开", VG_X(170), LV_TEXT_ALIGN_CENTER,
+                   VG_COLOR_TEXT);
+  lv_obj_align(label, LV_ALIGN_TOP_MID, 0, VG_Y(121));
+
+  vg_round_band(root, VG_X(45), VG_Y(180), VG_X(150), VG_Y(38),
+                band_color, band_text);
+  lv_obj_move_foreground(root);
+  vg_update_hold_progress_visuals(vg_uptime_ms());
+}
+
+static void vg_update_hold_progress_visuals(uint64_t now)
+{
+  uint64_t start_ms = 0;
+  uint64_t elapsed;
+  int value;
+  int remain;
+
+  if (!g_vg.hold_cancel_active && !g_vg.hold_confirm_active)
+    {
+      return;
+    }
+
+  start_ms = g_vg.hold_cancel_active ? g_vg.hold_cancel_start_ms :
+             g_vg.hold_confirm_start_ms;
+  if (start_ms == 0)
+    {
+      return;
+    }
+
+  elapsed = now - start_ms;
+  if (elapsed > VG_HOLD_CONFIRM_MS)
+    {
+      elapsed = VG_HOLD_CONFIRM_MS;
+    }
+
+  value = (int)(elapsed * 100 / VG_HOLD_CONFIRM_MS);
+  if (g_vg.hold_arc != NULL)
+    {
+      lv_arc_set_value(g_vg.hold_arc, value);
+    }
+
+  remain = (int)((VG_HOLD_CONFIRM_MS - elapsed + 999) / 1000);
+  if (remain < 1)
+    {
+      remain = 1;
+    }
+  else if (remain > 9)
+    {
+      remain = 9;
+    }
+
+  if (g_vg.hold_digit_img != NULL && remain != g_vg.hold_last_value)
+    {
+      g_vg.hold_last_value = remain;
+      lv_image_set_src(g_vg.hold_digit_img, g_count_digits[remain]);
+    }
+}
+
+static void vg_update_alarm_hold(void)
+{
+  uint64_t now;
+
+  if (g_vg.state != VG_STATE_PREALERT ||
+      g_vg.active.type != VG_EVENT_FALL)
+    {
+      g_vg.hold_cancel_active = false;
+      g_vg.hold_confirm_active = false;
+      g_vg.hold_action = 0;
+      g_vg.hold_last_value = -1;
+      return;
+    }
+
+  now = vg_uptime_ms();
+  vg_update_hold_progress_visuals(now);
+
+  if (g_vg.hold_cancel_active &&
+      now - g_vg.hold_cancel_start_ms >= VG_HOLD_CONFIRM_MS)
+    {
+      g_vg.hold_cancel_active = false;
+      g_vg.hold_action = 0;
+      vg_cancel_event();
+      return;
+    }
+
+  if (g_vg.hold_confirm_active &&
+      now - g_vg.hold_confirm_start_ms >= VG_HOLD_CONFIRM_MS)
+    {
+      g_vg.hold_confirm_active = false;
+      g_vg.hold_action = 0;
+      vg_confirm_alert();
+    }
+}
+
 static void vg_render_home(void)
 {
   lv_obj_t *scr = vg_screen_reset();
-  lv_obj_t *label;
-  char line[96];
-  int32_t w = lv_display_get_horizontal_resolution(NULL);
-  int32_t bw = (w - 36) / 2;
+  lv_obj_t *root;
 
-  vg_render_header(scr, "守护", VG_COLOR_OK);
+  lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), LV_PART_MAIN);
+  lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(scr, vg_home_event_cb, LV_EVENT_LONG_PRESSED, NULL);
+  lv_obj_add_event_cb(scr, vg_home_event_cb, LV_EVENT_GESTURE, NULL);
 
-  label = vg_label(scr, "安全守护运行中", w - 24,
-                   LV_TEXT_ALIGN_CENTER, VG_COLOR_TEXT);
-  lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 70);
+  root = vg_fixed_root(scr);
+  lv_obj_add_flag(root, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(root, vg_home_event_cb, LV_EVENT_LONG_PRESSED, NULL);
+  lv_obj_add_event_cb(root, vg_home_event_cb, LV_EVENT_GESTURE, NULL);
 
-  snprintf(line, sizeof(line), "模式：%s  连接：串口上报",
-           vg_mode_name(g_vg.mode));
-  label = vg_label(scr, line, w - 24, LV_TEXT_ALIGN_CENTER, VG_COLOR_MUTED);
-  lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 102);
+  g_vg.home_last_minute = -1;
+  g_vg.home_last_mday = -1;
 
-  g_vg.imu_status_label = vg_label(scr, "IMU 启动中", w - 24,
-                                   LV_TEXT_ALIGN_CENTER, VG_COLOR_MUTED);
-  lv_obj_align(g_vg.imu_status_label, LV_ALIGN_TOP_MID, 0, 150);
+  if (g_vg.watchface == 0)
+    {
+      vg_image_at(root, &velaguard_img_icon_rainbow_rain_bg, 0, 0);
+      g_vg.home_time_img[0] = vg_image_at(root,
+        &velaguard_img_icon_rainbow_rain_white_0, VG_X(64), VG_Y(49));
+      g_vg.home_time_img[1] = vg_image_at(root,
+        &velaguard_img_icon_rainbow_rain_white_0, VG_X(122), VG_Y(48));
+      g_vg.home_time_img[2] = vg_image_at(root,
+        &velaguard_img_icon_rainbow_rain_blue_0, VG_X(64), VG_Y(129));
+      g_vg.home_time_img[3] = vg_image_at(root,
+        &velaguard_img_icon_rainbow_rain_blue_0, VG_X(122), VG_Y(128));
+      g_vg.home_date_label = vg_label(root, "", VG_X(96),
+                                      LV_TEXT_ALIGN_LEFT, VG_COLOR_TEXT);
+      lv_label_set_long_mode(g_vg.home_date_label, LV_LABEL_LONG_CLIP);
+      lv_obj_align(g_vg.home_date_label, LV_ALIGN_TOP_LEFT,
+                   VG_X(42), VG_Y(241));
+      g_vg.home_week_label = vg_label(root, "", VG_X(60),
+                                      LV_TEXT_ALIGN_LEFT, VG_COLOR_TEXT);
+      lv_obj_align(g_vg.home_week_label, LV_ALIGN_TOP_LEFT,
+                   VG_X(112), VG_Y(241));
+      vg_image_at(root, &velaguard_img_icon_rainbow_rain_battery_5,
+                  VG_X(163), VG_Y(247));
+    }
+  else
+    {
+      vg_image_at(root, &velaguard_img_icon_touch_future_illustration,
+                  VG_X(18), VG_Y(36));
+      g_vg.home_time_img[0] = vg_image_at(root,
+        &velaguard_img_icon_touch_future_hour_0, VG_X(36), VG_Y(205));
+      g_vg.home_time_img[1] = vg_image_at(root,
+        &velaguard_img_icon_touch_future_hour_0, VG_X(72), VG_Y(205));
+      vg_image_at(root, &velaguard_img_icon_touch_future_colon,
+                  VG_X(108), VG_Y(205));
+      g_vg.home_time_img[2] = vg_image_at(root,
+        &velaguard_img_icon_touch_future_hour_0, VG_X(136), VG_Y(205));
+      g_vg.home_time_img[3] = vg_image_at(root,
+        &velaguard_img_icon_touch_future_hour_0, VG_X(172), VG_Y(205));
+      g_vg.home_date_img[0] = vg_image_at(root,
+        &velaguard_img_icon_touch_future_date_0, VG_X(31), VG_Y(249));
+      g_vg.home_date_img[1] = vg_image_at(root,
+        &velaguard_img_icon_touch_future_date_0, VG_X(48), VG_Y(249));
+      vg_image_at(root, &velaguard_img_icon_touch_future_date_slash,
+                  VG_X(65), VG_Y(249));
+      g_vg.home_date_img[2] = vg_image_at(root,
+        &velaguard_img_icon_touch_future_date_0, VG_X(74), VG_Y(249));
+      g_vg.home_date_img[3] = vg_image_at(root,
+        &velaguard_img_icon_touch_future_date_0, VG_X(91), VG_Y(249));
+      g_vg.home_week_img = vg_image_at(root,
+        &velaguard_img_icon_touch_future_week_0, VG_X(110), VG_Y(250));
+      vg_image_at(root, &velaguard_img_icon_touch_future_battery_5,
+                  VG_X(184), VG_Y(248));
+    }
 
-  g_vg.imu_value_label = vg_label(scr, "mag --mg  gyro --dps", w - 24,
-                                  LV_TEXT_ALIGN_CENTER, VG_COLOR_MUTED);
-  lv_obj_align(g_vg.imu_value_label, LV_ALIGN_TOP_MID, 0, 184);
-
-  g_vg.imu_detail_label = vg_label(scr, "peak --/--  姿态 --  静止 --ms",
-                                   w - 24, LV_TEXT_ALIGN_CENTER,
-                                   VG_COLOR_MUTED);
-  lv_obj_align(g_vg.imu_detail_label, LV_ALIGN_TOP_MID, 0, 216);
-  vg_update_imu_labels();
-
-  vg_action_button(scr, "SOS求助", 12, 300, w - 24, 72, VG_COLOR_ALERT,
-                   VG_ACTION_SOS);
-  vg_action_button(scr, "事件记录", 12, 392, bw, 40, VG_COLOR_CARD_ALT,
-                   VG_ACTION_HISTORY);
-  vg_action_button(scr, "设置", 24 + bw, 392, bw, 40, VG_COLOR_CARD_ALT,
-                   VG_ACTION_SETTINGS);
+  vg_update_watchface_time();
 }
 
 static void vg_render_prealert(void)
 {
-  lv_obj_t *scr = vg_screen_reset();
-  lv_obj_t *label;
-  char line[32];
-  int32_t w = lv_display_get_horizontal_resolution(NULL);
-  int32_t bw = (w - 36) / 2;
-
-  vg_render_header(scr, "确认", VG_COLOR_WARN);
-
-  label = vg_label(scr, vg_event_title(g_vg.active.type), w - 24,
-                   LV_TEXT_ALIGN_CENTER, VG_COLOR_TEXT);
-  lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 70);
-
-  snprintf(line, sizeof(line), "%d", g_vg.countdown);
-  g_vg.countdown_label = vg_label(scr, line, w - 24, LV_TEXT_ALIGN_CENTER,
-                                  VG_COLOR_WARN);
-  lv_obj_align(g_vg.countdown_label, LV_ALIGN_TOP_MID, 0, 116);
-
-  label = vg_label(scr, "秒后自动告警", w - 24,
-                   LV_TEXT_ALIGN_CENTER, VG_COLOR_MUTED);
-  lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 160);
-
-  g_vg.detail_label = vg_label(scr, g_vg.active.summary, w - 32,
-                               LV_TEXT_ALIGN_CENTER, VG_COLOR_MUTED);
-  lv_obj_align(g_vg.detail_label, LV_ALIGN_TOP_MID, 0, 206);
-
-  vg_action_button(scr, "取消", 12, 326, bw, 64, VG_COLOR_CARD_ALT,
-                   VG_ACTION_CANCEL);
-  vg_action_button(scr, "立即告警", 24 + bw, 326, bw, 64, VG_COLOR_ALERT,
-                   VG_ACTION_CONFIRM);
-  vg_action_button(scr, "返回守护", 12, 406, w - 24, 34, VG_COLOR_CARD_ALT,
-                   VG_ACTION_CANCEL);
+  vg_render_alert();
 }
 
 static void vg_render_alert(void)
 {
   lv_obj_t *scr = vg_screen_reset();
+  lv_obj_t *root;
+  lv_obj_t *img;
   lv_obj_t *label;
-  char line[64];
-  int32_t w = lv_display_get_horizontal_resolution(NULL);
+  lv_obj_t *btn;
+  bool prealert = g_vg.state == VG_STATE_PREALERT;
+  bool fall = g_vg.active.type == VG_EVENT_FALL;
 
-  vg_render_header(scr, "告警", VG_COLOR_ALERT);
+  lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), LV_PART_MAIN);
+  root = vg_fixed_root(scr);
+  vg_image_at(root, &velaguard_img_bg_alarm, 0, 0);
 
-  label = vg_label(scr, "SOS 告警中", w - 24, LV_TEXT_ALIGN_CENTER,
-                   VG_COLOR_ALERT);
-  lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 72);
+  if (prealert && g_vg.active.type == VG_EVENT_MANUAL_SOS)
+    {
+      g_vg.countdown_arc = lv_arc_create(root);
+      lv_obj_set_size(g_vg.countdown_arc, VG_X(86), VG_X(86));
+      lv_obj_align(g_vg.countdown_arc, LV_ALIGN_TOP_MID, 0, VG_Y(34));
+      lv_arc_set_range(g_vg.countdown_arc, 0, 100);
+      lv_arc_set_value(g_vg.countdown_arc, 0);
+      lv_arc_set_bg_angles(g_vg.countdown_arc, 0, 360);
+      lv_arc_set_rotation(g_vg.countdown_arc, 270);
+      lv_obj_remove_style(g_vg.countdown_arc, NULL, LV_PART_KNOB);
+      lv_obj_clear_flag(g_vg.countdown_arc, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_set_style_arc_color(g_vg.countdown_arc,
+                                 lv_color_hex(0xff7a20),
+                                 LV_PART_INDICATOR);
+      lv_obj_set_style_arc_width(g_vg.countdown_arc, VG_X(4),
+                                 LV_PART_INDICATOR);
+      lv_obj_set_style_arc_color(g_vg.countdown_arc,
+                                 lv_color_hex(0x8d1515), LV_PART_MAIN);
+      lv_obj_set_style_arc_width(g_vg.countdown_arc, VG_X(4),
+                                 LV_PART_MAIN);
 
-  label = vg_label(scr, vg_event_title(g_vg.active.type), w - 24,
-                   LV_TEXT_ALIGN_CENTER, VG_COLOR_TEXT);
-  lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 114);
+      g_vg.countdown_single_img = vg_image_at(root,
+        g_count_digits[g_vg.countdown % 10], VG_X(98), VG_Y(42));
+      lv_obj_align(g_vg.countdown_single_img, LV_ALIGN_TOP_MID, 0,
+                   VG_Y(47));
 
-  snprintf(line, sizeof(line), "风险 %d  置信度 %d%%",
-           g_vg.active.risk, g_vg.active.confidence);
-  label = vg_label(scr, line, w - 24, LV_TEXT_ALIGN_CENTER, VG_COLOR_WARN);
-  lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 150);
+      label = vg_label(root, "请勿松开", VG_X(180), LV_TEXT_ALIGN_CENTER,
+                       VG_COLOR_TEXT);
+      lv_obj_align(label, LV_ALIGN_TOP_MID, 0, VG_Y(122));
+      vg_round_band(root, VG_X(45), VG_Y(197), VG_X(150), VG_Y(48),
+                    0x68424d, "正在求助中");
+      return;
+    }
 
-  label = vg_label(scr, g_vg.active.summary, w - 32, LV_TEXT_ALIGN_CENTER,
-                   VG_COLOR_MUTED);
-  lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 196);
+  if (prealert && fall)
+    {
+      label = vg_label(root, "检测到跌倒", VG_X(220), LV_TEXT_ALIGN_CENTER,
+                       VG_COLOR_TEXT);
+      lv_obj_align(label, LV_ALIGN_TOP_MID, 0, VG_Y(42));
 
-  label = vg_label(scr, "本地告警：屏幕 + 串口上报", w - 24,
-                   LV_TEXT_ALIGN_CENTER, VG_COLOR_MUTED);
-  lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 284);
+      img = vg_image_at(root, &velaguard_img_fall_icon, VG_X(43), VG_Y(88));
+      lv_obj_move_foreground(img);
 
-  vg_action_button(scr, "解除", 12, 334, w - 24, 62, VG_COLOR_OK,
-                   VG_ACTION_RESOLVE);
-  vg_action_button(scr, "事件记录", 12, 410, w - 24, 34, VG_COLOR_CARD_ALT,
-                   VG_ACTION_HISTORY);
+      g_vg.countdown_tens_img = vg_image_at(root,
+        g_touch_hour_digits[(g_vg.countdown / 10) % 10], VG_X(126),
+        VG_Y(104));
+      g_vg.countdown_ones_img = vg_image_at(root,
+        g_touch_hour_digits[g_vg.countdown % 10], VG_X(160), VG_Y(104));
+      label = vg_label(root, "秒", VG_X(28), LV_TEXT_ALIGN_CENTER,
+                       VG_COLOR_TEXT);
+      lv_obj_align(label, LV_ALIGN_TOP_LEFT, VG_X(198), VG_Y(109));
+
+      vg_hold_button(root, "我没事\n长按", VG_X(21), VG_Y(211),
+                     VG_X(90), VG_Y(54),
+                     0xd79500, VG_COLOR_TEXT,
+                     VG_ACTION_FALL_CANCEL_HOLD);
+      vg_hold_button(root, "立即求助\n长按", VG_X(129), VG_Y(211),
+                     VG_X(90), VG_Y(54),
+                     0xff4b22, VG_COLOR_TEXT,
+                     VG_ACTION_FALL_CONFIRM_HOLD);
+      vg_update_countdown_visuals();
+      return;
+    }
+
+  img = vg_image_at(root, fall ? &velaguard_img_fall_icon :
+                    g_alarm_frames[0], fall ? VG_X(70) : VG_X(93),
+                    fall ? VG_Y(62) : VG_Y(48));
+  lv_obj_move_foreground(img);
+
+  label = vg_label(root, fall ? "报警已上报" : "紧急求助已发送",
+                   VG_X(220), LV_TEXT_ALIGN_CENTER, VG_COLOR_TEXT);
+  lv_obj_align(label, LV_ALIGN_TOP_MID, 0, VG_Y(142));
+
+  label = vg_label(root, "请等待救援", VG_X(220), LV_TEXT_ALIGN_CENTER,
+                   VG_COLOR_TEXT);
+  lv_obj_align(label, LV_ALIGN_TOP_MID, 0, VG_Y(176));
+
+  btn = vg_action_button(root, "返回表盘", VG_X(36), VG_Y(218),
+                         VG_X(168), VG_Y(42), 0xffffff, VG_ACTION_RESOLVE);
+  lv_obj_set_style_text_color(lv_obj_get_child(btn, 0),
+                              lv_color_hex(0xff2f00), LV_PART_MAIN);
 }
 
 static void vg_render_history(void)
@@ -933,6 +1844,110 @@ static void vg_render_settings(void)
   vg_action_button(scr, "返回", 12, 392, w - 24, 38, VG_COLOR_CARD_ALT,
                    VG_ACTION_BACK);
 }
+
+static void vg_render_bluetooth(void)
+{
+  lv_obj_t *scr = vg_screen_reset();
+  lv_obj_t *root;
+  lv_obj_t *label;
+  lv_obj_t *sw;
+  lv_obj_t *dot;
+  char addr[40];
+
+  lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), LV_PART_MAIN);
+  lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(scr, vg_bluetooth_event_cb, LV_EVENT_GESTURE, NULL);
+
+  root = vg_fixed_root(scr);
+  lv_obj_add_flag(root, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(root, vg_bluetooth_event_cb, LV_EVENT_GESTURE, NULL);
+
+  vg_image_at(root, &velaguard_img_ble_icon, VG_X(18), VG_Y(31));
+  label = vg_label(root, "蓝牙", VG_X(110), LV_TEXT_ALIGN_LEFT,
+                   VG_COLOR_TEXT);
+  lv_obj_align(label, LV_ALIGN_TOP_LEFT, VG_X(58), VG_Y(32));
+
+  sw = lv_button_create(root);
+  lv_obj_set_size(sw, VG_X(96), VG_Y(54));
+  lv_obj_align(sw, LV_ALIGN_TOP_RIGHT, -VG_X(8), VG_Y(15));
+  lv_obj_set_style_bg_color(sw, lv_color_hex(vg_ble_is_enabled() ?
+                          0xff6a00 : 0x3a3a3a), LV_PART_MAIN);
+  lv_obj_set_style_radius(sw, VG_Y(27), LV_PART_MAIN);
+  lv_obj_set_style_border_width(sw, 0, LV_PART_MAIN);
+  lv_obj_add_flag(sw, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_clear_flag(sw, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_add_event_cb(sw, vg_ble_toggle_event_cb, LV_EVENT_PRESSED, NULL);
+  lv_obj_add_event_cb(sw, vg_ble_toggle_event_cb, LV_EVENT_CLICKED, NULL);
+  lv_obj_add_event_cb(sw, vg_ble_toggle_event_cb, LV_EVENT_RELEASED, NULL);
+
+  dot = lv_obj_create(sw);
+  lv_obj_set_size(dot, VG_X(28), VG_X(28));
+  lv_obj_align(dot, vg_ble_is_enabled() ? LV_ALIGN_RIGHT_MID :
+               LV_ALIGN_LEFT_MID, vg_ble_is_enabled() ? -VG_X(6) :
+               VG_X(6), 0);
+  lv_obj_set_style_bg_color(dot, lv_color_hex(0xffffff), LV_PART_MAIN);
+  lv_obj_set_style_radius(dot, VG_X(12), LV_PART_MAIN);
+  lv_obj_set_style_border_width(dot, 0, LV_PART_MAIN);
+  lv_obj_clear_flag(dot, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(dot, LV_OBJ_FLAG_CLICKABLE);
+
+  vg_ble_get_local_address(addr, sizeof(addr));
+  if (strcmp(addr, "initializing") == 0)
+    {
+      strlcpy(addr, "蓝牙初始化中", sizeof(addr));
+    }
+  else if (strcmp(addr, "pending") == 0)
+    {
+      strlcpy(addr, "地址未就绪", sizeof(addr));
+    }
+
+  label = vg_label(root, "本机 MAC 地址", VG_X(204), LV_TEXT_ALIGN_LEFT,
+                   VG_COLOR_MUTED);
+  lv_obj_align(label, LV_ALIGN_TOP_LEFT, VG_X(18), VG_Y(112));
+  label = vg_label(root, addr, VG_X(204), LV_TEXT_ALIGN_LEFT, VG_COLOR_TEXT);
+  lv_obj_align(label, LV_ALIGN_TOP_LEFT, VG_X(18), VG_Y(146));
+}
+
+
+static void vg_render_watchface_picker(void)
+{
+  lv_obj_t *scr = vg_screen_reset();
+  lv_obj_t *root;
+  lv_obj_t *img;
+  lv_obj_t *label;
+  lv_obj_t *card;
+
+  lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), LV_PART_MAIN);
+  root = vg_fixed_root(scr);
+
+  label = vg_label(root, "选择表盘", 350, LV_TEXT_ALIGN_CENTER,
+                   VG_COLOR_TEXT);
+  lv_obj_align(label, LV_ALIGN_TOP_MID, 0, 28);
+
+  card = vg_action_button(root, "", 18, 82, 166, 250, VG_COLOR_CARD_ALT,
+                          VG_ACTION_DIAL_RAINBOW);
+  img = lv_image_create(card);
+  lv_image_set_src(img, &velaguard_img_thumb_rainbow_rain);
+  lv_obj_align(img, LV_ALIGN_TOP_MID, 0, 14);
+
+  label = vg_label(card, "流星", 154, LV_TEXT_ALIGN_CENTER,
+                   VG_COLOR_TEXT);
+  lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -16);
+
+  card = vg_action_button(root, "", 206, 82, 166, 250, VG_COLOR_CARD_ALT,
+                          VG_ACTION_DIAL_SIMPLE);
+  img = lv_image_create(card);
+  lv_image_set_src(img, &velaguard_img_thumb_touch_future);
+  lv_obj_align(img, LV_ALIGN_TOP_MID, 0, 14);
+
+  label = vg_label(card, "小猫", 154, LV_TEXT_ALIGN_CENTER,
+                   VG_COLOR_TEXT);
+  lv_obj_align(label, LV_ALIGN_BOTTOM_MID, 0, -16);
+
+  vg_action_button(root, "返回", 72, 372, 246, 58, VG_COLOR_CARD_ALT,
+                   VG_ACTION_BACK);
+}
+
 
 static void vg_render_current(void)
 {
@@ -1116,14 +2131,41 @@ static void vg_buttons_poll(void)
       return;
     }
 
-  /* The Huangshan Pi BSP exposes PA43/KEY2 as the only application button.
-   * Treat its rising edge as a real manual SOS, never as a demo fall.
-   */
-
   if ((sample & VG_SOS_BUTTON_BIT) &&
       !(g_vg.last_buttons & VG_SOS_BUTTON_BIT))
     {
-      vg_trigger_event(VG_EVENT_MANUAL_SOS);
+      g_vg.button_down_ms = vg_uptime_ms();
+      g_vg.button_long_handled = false;
+      if (g_vg.state == VG_STATE_GUARDING)
+        {
+          g_vg.sos_prompt_visible = true;
+          vg_render_sos_prompt();
+        }
+    }
+
+  if ((sample & VG_SOS_BUTTON_BIT) && !g_vg.button_long_handled &&
+      g_vg.button_down_ms != 0 &&
+      vg_uptime_ms() - g_vg.button_down_ms >= VG_SOS_LONG_MS)
+    {
+      g_vg.button_long_handled = true;
+      g_vg.sos_prompt_visible = false;
+      if (g_vg.state == VG_STATE_GUARDING)
+        {
+          vg_trigger_event(VG_EVENT_MANUAL_SOS);
+        }
+    }
+
+  if (!(sample & VG_SOS_BUTTON_BIT) &&
+      (g_vg.last_buttons & VG_SOS_BUTTON_BIT))
+    {
+      if (!g_vg.button_long_handled && g_vg.sos_prompt_visible)
+        {
+          g_vg.sos_prompt_visible = false;
+          vg_render_home();
+        }
+
+      g_vg.button_down_ms = 0;
+      g_vg.button_long_handled = false;
     }
 
   g_vg.last_buttons = sample;
@@ -1132,7 +2174,9 @@ static void vg_buttons_poll(void)
 
 static void vg_tick_cb(lv_timer_t *timer)
 {
-  char line[16];
+  uint64_t now;
+  uint64_t elapsed;
+  uint64_t total_ms;
 
   UNUSED(timer);
 
@@ -1140,34 +2184,61 @@ static void vg_tick_cb(lv_timer_t *timer)
   vg_buttons_poll();
 #endif
 
+  now = vg_uptime_ms();
+  vg_update_watchface_time();
+  vg_update_alarm_hold();
+
+  if (g_vg.alarm_img != NULL)
+    {
+      int frame = (now / 120) % VG_ALARM_FRAME_COUNT;
+
+      if (frame != g_vg.alarm_frame)
+        {
+          g_vg.alarm_frame = frame;
+          lv_image_set_src(g_vg.alarm_img,
+                           g_alarm_frames[g_vg.alarm_frame]);
+        }
+    }
+
   if (g_vg.state != VG_STATE_PREALERT)
     {
       g_vg.tick_accum_ms = 0;
       return;
     }
 
-  g_vg.tick_accum_ms += VG_TICK_PERIOD_MS;
-  if (g_vg.tick_accum_ms < 1000)
+  if (g_vg.countdown_start_ms == 0)
+    {
+      g_vg.countdown_start_ms = now;
+    }
+
+  elapsed = now - g_vg.countdown_start_ms;
+  total_ms = (uint64_t)g_vg.countdown_total * 1000;
+  if (total_ms == 0)
     {
       return;
     }
 
-  g_vg.tick_accum_ms -= 1000;
-
-  if (g_vg.countdown > 0)
+  if (elapsed >= total_ms)
     {
-      g_vg.countdown--;
-    }
-
-  if (g_vg.countdown_label != NULL)
-    {
-      snprintf(line, sizeof(line), "%d", g_vg.countdown);
-      lv_label_set_text(g_vg.countdown_label, line);
-    }
-
-  if (g_vg.countdown <= 0)
-    {
+      g_vg.countdown = 0;
+      vg_update_countdown_visuals();
       vg_confirm_alert();
+      return;
+    }
+
+  g_vg.countdown = g_vg.countdown_total - (int)(elapsed / 1000);
+  if (g_vg.countdown != g_vg.countdown_last_value)
+    {
+      g_vg.countdown_last_value = g_vg.countdown;
+      vg_update_countdown_visuals();
+    }
+
+  if (g_vg.active.type == VG_EVENT_MANUAL_SOS &&
+      g_vg.countdown_arc != NULL)
+    {
+      int arc_value = (int)((elapsed % 1000) * 100 / 1000);
+
+      lv_arc_set_value(g_vg.countdown_arc, arc_value);
     }
 }
 
@@ -1376,6 +2447,8 @@ int main(int argc, FAR char *argv[])
   g_vg.state = VG_STATE_GUARDING;
   g_vg.mode = VG_MODE_ELDER;
   g_vg.next_id = 1000;
+  g_vg.home_last_minute = -1;
+  g_vg.home_last_mday = -1;
 #ifdef CONFIG_INPUT_BUTTONS
   g_vg.button_fd = -1;
 #endif

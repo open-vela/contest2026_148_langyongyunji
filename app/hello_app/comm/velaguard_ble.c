@@ -10,6 +10,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include <zephyr/bluetooth/addr.h>
 #include <zephyr/bluetooth/bluetooth.h>
 #include <zephyr/bluetooth/conn.h>
 #include <zephyr/bluetooth/gatt.h>
@@ -22,6 +23,7 @@
 
 #define VG_BLE_COMMAND_CALL_REQUEST 1
 #define VG_BLE_FLAG_USER_CONFIRMED  1
+#define VG_BLE_ADDR_TEXT_LEN        18
 
 static const struct bt_uuid_128 g_vg_service_uuid =
   BT_UUID_INIT_128(VG_BLE_SERVICE_UUID);
@@ -29,12 +31,15 @@ static const struct bt_uuid_128 g_vg_event_uuid =
   BT_UUID_INIT_128(VG_BLE_EVENT_UUID);
 
 static struct vg_ble_call_packet_s g_vg_last_packet;
+static struct bt_conn *g_vg_conn;
 static bool g_vg_connected;
 static bool g_vg_notify_enabled;
 static bool g_vg_initialized;
+static bool g_vg_enabled;
 static bool g_vg_call_pending;
 static volatile bool g_vg_restart_advertising;
 static unsigned int g_vg_adv_retry_skip;
+static char g_vg_local_addr[VG_BLE_ADDR_TEXT_LEN];
 
 /* The zblue H:4 port always references the optional snoop hook, while this
  * compact contest configuration does not include the Bluetooth log service.
@@ -88,6 +93,7 @@ static void vg_ble_connected(struct bt_conn *conn, uint8_t err)
   if (err == 0)
     {
       g_vg_connected = true;
+      g_vg_conn = bt_conn_ref(conn);
       printf("VelaGuard BLE: phone connected\n");
     }
   else
@@ -100,10 +106,20 @@ static void vg_ble_disconnected(struct bt_conn *conn, uint8_t reason)
 {
   g_vg_connected = false;
   g_vg_notify_enabled = false;
-  g_vg_restart_advertising = true;
-  g_vg_adv_retry_skip = 0;
+  if (g_vg_conn != NULL)
+    {
+      bt_conn_unref(g_vg_conn);
+      g_vg_conn = NULL;
+    }
+
+  if (g_vg_enabled)
+    {
+      g_vg_restart_advertising = true;
+      g_vg_adv_retry_skip = 0;
+      printf("VelaGuard BLE: advertising restart scheduled\n");
+    }
+
   printf("VelaGuard BLE: phone disconnected (%u)\n", reason);
-  printf("VelaGuard BLE: advertising restart scheduled\n");
 }
 
 static struct bt_conn_cb g_vg_conn_callbacks =
@@ -141,6 +157,44 @@ static const struct bt_data g_vg_sd[] =
   BT_DATA(BT_DATA_NAME_COMPLETE, "VelaGuard", 9),
 };
 
+static bool vg_ble_addr_is_zero(const bt_addr_le_t *addr)
+{
+  int i;
+
+  for (i = 0; i < 6; i++)
+    {
+      if (addr->a.val[i] != 0)
+        {
+          return false;
+        }
+    }
+
+  return true;
+}
+
+static void vg_ble_cache_local_address(void)
+{
+  bt_addr_le_t addrs[CONFIG_BT_ID_MAX];
+  size_t count = ARRAY_SIZE(addrs);
+
+  strlcpy(g_vg_local_addr, "pending", sizeof(g_vg_local_addr));
+
+  if (!g_vg_initialized)
+    {
+      return;
+    }
+
+  bt_id_get(addrs, &count);
+  if (count == 0 || vg_ble_addr_is_zero(&addrs[0]))
+    {
+      printf("VelaGuard BLE: local identity address unavailable\n");
+      return;
+    }
+
+  bt_addr_to_str(&addrs[0].a, g_vg_local_addr, sizeof(g_vg_local_addr));
+  printf("VelaGuard BLE: local address %s\n", g_vg_local_addr);
+}
+
 static int vg_ble_start_advertising(void)
 {
   int ret;
@@ -148,6 +202,15 @@ static int vg_ble_start_advertising(void)
   ret = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1,
                         g_vg_ad, ARRAY_SIZE(g_vg_ad),
                         g_vg_sd, ARRAY_SIZE(g_vg_sd));
+  if (ret == -EALREADY)
+    {
+      printf("VelaGuard BLE: advertising already active; restarting\n");
+      bt_le_adv_stop();
+      ret = bt_le_adv_start(BT_LE_ADV_CONN_FAST_1,
+                            g_vg_ad, ARRAY_SIZE(g_vg_ad),
+                            g_vg_sd, ARRAY_SIZE(g_vg_sd));
+    }
+
   if (ret < 0)
     {
       printf("VelaGuard BLE: advertising failed (%d)\n", ret);
@@ -199,13 +262,17 @@ int vg_ble_init(void)
 
   printf("VelaGuard BLE: GATT service registered\n");
 
+  g_vg_initialized = true;
+  g_vg_enabled = true;
+  vg_ble_cache_local_address();
+
   ret = vg_ble_start_advertising();
   if (ret < 0)
     {
+      g_vg_enabled = false;
       return ret;
     }
 
-  g_vg_initialized = true;
   return 0;
 }
 
@@ -213,7 +280,7 @@ void vg_ble_process(void)
 {
   int ret;
 
-  if (!g_vg_initialized)
+  if (!g_vg_initialized || !g_vg_enabled)
     {
       return;
     }
@@ -290,11 +357,96 @@ bool vg_ble_is_connected(void)
   return g_vg_connected;
 }
 
+bool vg_ble_is_enabled(void)
+{
+  return g_vg_enabled;
+}
+
+int vg_ble_set_enabled(bool enabled)
+{
+  int ret;
+
+  if (enabled)
+    {
+      if (!g_vg_initialized)
+        {
+          return vg_ble_init();
+        }
+
+      if (g_vg_enabled)
+        {
+          return 0;
+        }
+
+      g_vg_enabled = true;
+      ret = vg_ble_start_advertising();
+      if (ret < 0)
+        {
+          g_vg_enabled = false;
+        }
+
+      return ret;
+    }
+
+  if (!g_vg_initialized || !g_vg_enabled)
+    {
+      return 0;
+    }
+
+  g_vg_enabled = false;
+  g_vg_restart_advertising = false;
+  g_vg_adv_retry_skip = 0;
+  g_vg_call_pending = false;
+
+  if (g_vg_connected && g_vg_conn != NULL)
+    {
+      ret = bt_conn_disconnect(g_vg_conn, BT_HCI_ERR_REMOTE_USER_TERM_CONN);
+      if (ret < 0)
+        {
+          printf("VelaGuard BLE: disconnect failed (%d)\n", ret);
+          return ret;
+        }
+    }
+
+  ret = bt_le_adv_stop();
+  if (ret < 0 && ret != -EALREADY)
+    {
+      printf("VelaGuard BLE: advertising stop failed (%d)\n", ret);
+      return ret;
+    }
+
+  printf("VelaGuard BLE: disabled\n");
+  return 0;
+}
+
+void vg_ble_get_local_address(char *buf, size_t len)
+{
+  if (buf == NULL || len == 0)
+    {
+      return;
+    }
+
+  if (!g_vg_initialized)
+    {
+      strlcpy(buf, "initializing", len);
+      return;
+    }
+
+  if (g_vg_local_addr[0] == '\0' ||
+      strcmp(g_vg_local_addr, "pending") == 0)
+    {
+      vg_ble_cache_local_address();
+    }
+
+  strlcpy(buf, g_vg_local_addr[0] == '\0' ? "pending" :
+          g_vg_local_addr, len);
+}
+
 int vg_ble_request_call(uint8_t event_type, uint8_t risk,
                         uint8_t confidence, uint32_t event_id,
                         uint32_t uptime_ms, bool user_confirmed)
 {
-  if (!g_vg_initialized)
+  if (!g_vg_initialized || !g_vg_enabled)
     {
       return -EHOSTDOWN;
     }

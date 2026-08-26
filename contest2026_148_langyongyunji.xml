@@ -11,7 +11,6 @@
   <project path="contest2026_148_langyongyunji" name="contest2026_148_langyongyunji">
     <linkfile src="app/hello_app" dest="packages/demos/contest2026_148_hello_app"/>
     <linkfile src="agent_skills/velaguard-safety.md" dest="packages/ai_agent/agent_skills/velaguard-safety.md"/>
-    <linkfile src="quickapp/hello_quickapp" dest="packages/apps/contest2026_148_hello_quickapp"/>
     <linkfile src="board/contest_board" dest="vendor/openvela/boards/contest2026_148_board"/>
   </project>
 </manifest>
