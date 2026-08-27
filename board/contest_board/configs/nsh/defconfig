@@ -237,7 +237,8 @@ CONFIG_GRAPHICS_LVGL=y
 CONFIG_EXAMPLES_LVGLDEMO=y
 # Enable the contest application from packages/demos/contest2026_148_hello_app.
 CONFIG_LVX_USE_DEMO_CONTEST2026_148_VELAGUARD=y
-CONFIG_CONTEST2026_148_AUDIO_TEST=y
+# audio_test is a development/test tool; keep it off in this branch.
+# CONFIG_CONTEST2026_148_AUDIO_TEST is not set
 CONFIG_CONTEST2026_148_DENOISE=y
 CONFIG_AUDIO=y
 CONFIG_AUDIO_FORMAT_PCM=y
