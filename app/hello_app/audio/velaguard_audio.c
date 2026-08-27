@@ -8,6 +8,7 @@
  ****************************************************************************/
 
 #include "velaguard_audio.h"
+#include "vg_denoise.h"
 
 #include <nuttx/config.h>
 #include <nuttx/audio/audio.h>
@@ -41,6 +42,7 @@ static struct ap_buffer_s *g_vg_audio_bufs[VG_AUDIO_MAX_BUFS];
 static unsigned int g_vg_audio_nbufs;
 static uint32_t g_vg_audio_sequence;
 static bool g_vg_audio_started;
+static vg_denoise_s *g_vg_denoise;
 
 /****************************************************************************
  * Keyword model integration point (weak, override with offline KWS model)
@@ -242,6 +244,12 @@ int vg_audio_capture_start(void)
 
   g_vg_audio_sequence = 0;
   g_vg_audio_started = true;
+
+  /* Noise suppression state (no-op when CONFIG_CONTEST2026_148_DENOISE
+   * is disabled). */
+
+  g_vg_denoise = vg_denoise_create(SAMPLE_RATE, 256);
+
   printf("VelaGuard audio: MIC 16kHz/16-bit capture started\n");
   return 0;
 
@@ -297,6 +305,9 @@ void vg_audio_capture_stop(void)
   close(g_vg_audio_fd);
   g_vg_audio_fd = -1;
   g_vg_audio_started = false;
+
+  vg_denoise_destroy(g_vg_denoise);
+  g_vg_denoise = NULL;
 }
 
 bool vg_audio_capture_level(struct vg_audio_level_s *level,
@@ -330,6 +341,14 @@ bool vg_audio_capture_level(struct vg_audio_level_s *level,
       unsigned int nsamp = (unsigned int)apb->nbytes / sizeof(int16_t);
 
       g_vg_audio_sequence++;
+
+      /* Denoise before analysis / keyword inference (in-place; no-op when
+       * denoise is disabled). */
+
+      if (g_vg_denoise != NULL)
+        {
+          vg_denoise_run(g_vg_denoise, (int16_t *)apb->samp, nsamp);
+        }
 
       vg_audio_analyze_pcm16((const int16_t *)apb->samp, nsamp, level);
 

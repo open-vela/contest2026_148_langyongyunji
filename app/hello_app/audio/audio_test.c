@@ -9,8 +9,10 @@
  *   audio_test rec [ms]      Record for <ms> then playback
  *   audio_test tone [ms]     Play a 1 kHz tone
  *
- * The recording is saved as a 16 kHz/16-bit/mono WAV file at
- * /data/audio_test_rec.wav; pull it to a PC with `sz /data/audio_test_rec.wav`.
+ * The denoised recording is saved as a 16 kHz/16-bit/mono WAV file at
+ * /data/audio_test_rec.wav.  When noise suppression is enabled, the raw
+ * (pre-denoise) samples are also saved at /data/audio_test_rec_orig.wav
+ * for comparison.  Pull them to a PC with `sz <path>`.
  ****************************************************************************/
 
 #include <nuttx/config.h>
@@ -28,6 +30,8 @@
 #include <nuttx/audio/audio.h>
 #include <nuttx/audio/pcm.h>
 
+#include "vg_denoise.h"
+
 /****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
@@ -39,6 +43,7 @@
 #define TONE_FREQ            1000
 #define MQ_NAME              "audio_test_mq"
 #define REC_FILE             "/data/audio_test_rec.wav"
+#define REC_FILE_ORIG        "/data/audio_test_rec_orig.wav"
 
 /* Application-level capture gain: the driver defaults to +30 dB (volume
  * 1000); back off 3 dB to +27 dB to avoid clipping on loud speech.
@@ -249,11 +254,13 @@ static int do_record(unsigned int duration_ms)
   struct audio_buf_desc_s desc;
   struct ap_buffer_s *bufs[4];
   FAR int16_t *rec_data = NULL;
+  FAR int16_t *orig_data = NULL;
   unsigned int nbufs, bufsize, allocated;
   unsigned int total_samp, rec_samp = 0, play_samp;
   unsigned int n;
   int fd, ret = -1;
   mqd_t mq;
+  vg_denoise_s *denoise = NULL;
 
   for (n = 0; n < 4; n++) bufs[n] = NULL;
   printf("[record] === Record then Playback ===\n");
@@ -262,20 +269,27 @@ static int do_record(unsigned int duration_ms)
   rec_data = malloc(total_samp * sizeof(int16_t));
   if (!rec_data) { printf("[record] malloc err\n"); return -1; }
 
+  /* Buffer for the pre-denoise (raw) samples, saved alongside the denoised
+   * result when noise suppression is active, for comparison. */
+
+  orig_data = malloc(total_samp * sizeof(int16_t));
+  if (!orig_data)
+    { printf("[record] malloc orig err\n"); free(rec_data); free(orig_data); return -1; }
+
   /* ── Phase 1: Continuous Capture via mq ── */
 
   fd = open(DEVICE_CAPT, O_RDONLY);
-  if (fd < 0) { printf("[record] ERROR open cap\n"); free(rec_data); return -1; }
+  if (fd < 0) { printf("[record] ERROR open cap\n"); free(rec_data); free(orig_data); return -1; }
 
   memset(&cap_info, 0, sizeof(cap_info));
   if (ioctl(fd, AUDIOIOC_GETBUFFERINFO, &cap_info) < 0)
-    { printf("[record] ERROR bufinfo cap\n"); free(rec_data); goto close_cap; }
+    { printf("[record] ERROR bufinfo cap\n"); free(rec_data); free(orig_data); goto close_cap; }
   nbufs = (unsigned int)cap_info.nbuffers; if (nbufs < 1) nbufs = 1;
   if (nbufs > 4) nbufs = 4;
   bufsize = (unsigned int)cap_info.buffer_size;
 
   if (audio_config(fd, AUDIO_TYPE_INPUT) < 0)
-    { printf("[record] ERROR config cap\n"); free(rec_data); goto close_cap; }
+    { printf("[record] ERROR config cap\n"); free(rec_data); free(orig_data); goto close_cap; }
 
   /* Apply application-level capture gain: driver default +30 dB minus
    * 3 dB headroom to avoid clipping on loud speech.
@@ -283,6 +297,13 @@ static int do_record(unsigned int duration_ms)
 
   if (set_capture_gain(fd, REC_CAPTURE_GAIN) < 0)
     printf("[record] WARNING: set capture gain failed\n");
+
+  /* Noise suppression (no-op when CONFIG_CONTEST2026_148_DENOISE is
+   * disabled).  Frame size 256 = 16 ms at 16 kHz. */
+
+  denoise = vg_denoise_create(SAMPLE_RATE, 256);
+  if (denoise == NULL)
+    printf("[record] WARNING: denoise init failed\n");
 
   /* Allocate buffers */
   for (n = 0; n < nbufs; n++)
@@ -295,7 +316,7 @@ static int do_record(unsigned int duration_ms)
     }
   allocated = n;
   if (allocated < 1)
-    { printf("[record] need >=1 buf\n"); free(rec_data); goto close_cap; }
+    { printf("[record] need >=1 buf\n"); free(rec_data); free(orig_data); goto close_cap; }
 
   printf("[record] cap configured, %u bufs x %u B\n", allocated, bufsize);
   fflush(stdout);
@@ -308,7 +329,7 @@ static int do_record(unsigned int duration_ms)
     attr.mq_flags   = 0;
     mq = mq_open(MQ_NAME, O_RDWR | O_CREAT, 0666, &attr);
     if (mq < 0)
-      { printf("[record] mq_open err\n"); free(rec_data); goto free_cap_bufs; }
+      { printf("[record] mq_open err\n"); free(rec_data); free(orig_data); goto free_cap_bufs; }
     mq_unlink(MQ_NAME);
   }
 
@@ -323,13 +344,13 @@ static int do_record(unsigned int duration_ms)
       if (ret < 0)
         {
           printf("[record] ERROR enq cap buf %u: %d\n", n, get_errno());
-          free(rec_data);
+          free(rec_data); free(orig_data);
           goto unreg_cap_mq;
         }
     }
 
   if (ioctl(fd, AUDIOIOC_START, 0) < 0)
-    { printf("[record] ERROR START cap\n"); free(rec_data); goto unreg_cap_mq; }
+    { printf("[record] ERROR START cap\n"); free(rec_data); free(orig_data); goto unreg_cap_mq; }
 
   printf("[record] recording...\n");
   fflush(stdout);
@@ -348,7 +369,20 @@ static int do_record(unsigned int duration_ms)
           unsigned int remaining = total_samp - rec_samp;
           unsigned int to_copy = nb < remaining ? nb : remaining;
 
-          memcpy(rec_data + rec_samp, apb->samp, to_copy * sizeof(int16_t));
+          /* Keep a copy of the raw (pre-denoise) samples. */
+
+          memcpy(orig_data + rec_samp, apb->samp,
+                 to_copy * sizeof(int16_t));
+
+          /* Denoise in place before copying (no-op when disabled). */
+
+          if (denoise != NULL)
+            {
+              vg_denoise_run(denoise, (int16_t *)apb->samp, nb);
+            }
+
+          memcpy(rec_data + rec_samp, apb->samp,
+                 to_copy * sizeof(int16_t));
           rec_samp += to_copy;
 
           /* Re-enqueue buffer unless we have enough */
@@ -375,6 +409,17 @@ static int do_record(unsigned int duration_ms)
   else
     printf("[record] saved %s -- run `sz %s` to download to PC\n",
            REC_FILE, REC_FILE);
+
+  /* When noise suppression is active, also save the raw (pre-denoise)
+   * samples so the effect can be compared. */
+
+  if (denoise != NULL)
+    {
+      if (save_rec_wav(REC_FILE_ORIG, orig_data, rec_samp) < 0)
+        printf("[record] WARNING: failed to save %s\n", REC_FILE_ORIG);
+      else
+        printf("[record] saved %s (raw, pre-denoise)\n", REC_FILE_ORIG);
+    }
 
   /* Diagnostic */
   {
@@ -408,9 +453,11 @@ free_cap_bufs:
     }
 close_cap:
   close(fd);
+  vg_denoise_destroy(denoise);
+  denoise = NULL;
 
   if (rec_samp == 0)
-    { printf("[record] nothing to play\n"); free(rec_data); return -1; }
+    { printf("[record] nothing to play\n"); free(rec_data); free(orig_data); return -1; }
 
   /* ── Phase 2: Continuous Playback via mq ── */
 
@@ -418,11 +465,11 @@ close_cap:
   printf("[record] --- playback ---\n");
 
   fd = open(DEVICE_PLAY, O_WRONLY);
-  if (fd < 0) { printf("[record] ERROR open play\n"); free(rec_data); return -1; }
+  if (fd < 0) { printf("[record] ERROR open play\n"); free(rec_data); free(orig_data); return -1; }
 
   memset(&play_info, 0, sizeof(play_info));
   if (ioctl(fd, AUDIOIOC_GETBUFFERINFO, &play_info) < 0)
-    { printf("[record] ERROR bufinfo play\n"); free(rec_data); goto close_play; }
+    { printf("[record] ERROR bufinfo play\n"); free(rec_data); free(orig_data); goto close_play; }
   nbufs = (unsigned int)play_info.nbuffers; if (nbufs < 1) nbufs = 1;
   if (nbufs > 4) nbufs = 4;
   bufsize = (unsigned int)play_info.buffer_size;
@@ -431,7 +478,7 @@ close_cap:
   fflush(stdout);
 
   if (audio_config(fd, AUDIO_TYPE_OUTPUT) < 0)
-    { printf("[record] ERROR config play\n"); free(rec_data); goto close_play; }
+    { printf("[record] ERROR config play\n"); free(rec_data); free(orig_data); goto close_play; }
 
   for (n = 0; n < nbufs; n++)
     {
@@ -443,7 +490,7 @@ close_cap:
     }
   allocated = n;
   if (allocated < 1)
-    { printf("[record] need >=1 play buf\n"); free(rec_data); goto close_play; }
+    { printf("[record] need >=1 play buf\n"); free(rec_data); free(orig_data); goto close_play; }
 
   {
     struct mq_attr attr;
@@ -452,7 +499,7 @@ close_cap:
     attr.mq_flags   = 0;
     mq = mq_open(MQ_NAME, O_RDWR | O_CREAT, 0666, &attr);
     if (mq < 0)
-      { printf("[record] mq_open play err\n"); free(rec_data); goto free_play_bufs; }
+      { printf("[record] mq_open play err\n"); free(rec_data); free(orig_data); goto free_play_bufs; }
     mq_unlink(MQ_NAME);
   }
 
@@ -479,7 +526,7 @@ close_cap:
       if (ret < 0)
         {
           printf("[record] ERROR enq play buf %u: %d\n", n, get_errno());
-          free(rec_data);
+          free(rec_data); free(orig_data);
           goto unreg_play_mq;
         }
     }
@@ -496,7 +543,7 @@ close_cap:
   }
 
   if (ioctl(fd, AUDIOIOC_START, 0) < 0)
-    { printf("[record] ERROR START play\n"); free(rec_data); goto unreg_play_mq; }
+    { printf("[record] ERROR START play\n"); free(rec_data); free(orig_data); goto unreg_play_mq; }
 
   printf("[record] playing...\n");
   fflush(stdout);
@@ -549,7 +596,7 @@ free_play_bufs:
 close_play:
   close(fd);
 
-  free(rec_data);
+  free(rec_data); free(orig_data);
   printf("[record] === Done ===\n");
   return ret;
 }

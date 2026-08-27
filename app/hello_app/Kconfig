@@ -79,4 +79,16 @@ config CONTEST2026_148_AUDIO_FEEDBACK
 		in ROMFS at /etc/data/audio/.
 		Requires: success.wav and failure.wav (16kHz, 16-bit, mono PCM).
 
+config CONTEST2026_148_DENOISE
+	bool "Noise suppression for MIC capture (speexdsp preprocess)"
+	default y
+	depends on AUDIO
+	---help---
+		Enable real-time noise suppression on the recorded microphone
+		stream (VelaGuard capture and the audio_test recorder).  Uses
+		the vendored libspeexdsp preprocessor (Ephraim-Malah spectral
+		subtraction): suppresses stationary environmental noise while
+		preserving speech detail.  When disabled, the raw microphone
+		samples are used as-is.
+
 endif # LVX_USE_DEMO_CONTEST2026_148_VELAGUARD
