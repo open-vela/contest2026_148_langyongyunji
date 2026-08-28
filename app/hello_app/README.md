@@ -74,7 +74,7 @@ hello_app/
 
 ```sh
 velaguard
-velaguard --imu-scan       # 探测 LSM6DSx，正常应看到 /dev/i2c0 0x6a WHO_AM_I=0x6a
+velaguard --imu-scan       # 探测 LSM6DSx，正常应看到 /dev/lsm6dsl0 0x6a WHO_AM_I=0x6a
 velaguard --imu-test 50    # 打印 50 组真实加速度/陀螺仪数据
 velaguard --fall-watch 30  # 连续 30 秒运行真实 IMU 跌倒检测
 ```

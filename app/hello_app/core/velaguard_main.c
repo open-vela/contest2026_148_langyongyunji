@@ -144,7 +144,7 @@ LV_FONT_DECLARE(velaguard_font_30);
 #endif
 
 #ifndef CONFIG_CONTEST2026_148_VELAGUARD_IMU_DEVPATH
-#  define CONFIG_CONTEST2026_148_VELAGUARD_IMU_DEVPATH "/dev/i2c0"
+#  define CONFIG_CONTEST2026_148_VELAGUARD_IMU_DEVPATH "/dev/lsm6dsl0"
 #endif
 
 #if CONFIG_CONTEST2026_148_VELAGUARD_HISTORY_SIZE < 1
@@ -2280,7 +2280,8 @@ static void vg_update_imu_labels(void)
       snprintf(line, sizeof(line), "IMU err=%d", g_vg.imu_last_error);
       lv_label_set_text(g_vg.imu_status_label, line);
       lv_label_set_text(g_vg.imu_value_label, "mag --mg  gyro --dps");
-      lv_label_set_text(g_vg.imu_detail_label, "/dev/i2c0 0x6a");
+      lv_label_set_text(g_vg.imu_detail_label,
+                        CONFIG_CONTEST2026_148_VELAGUARD_IMU_DEVPATH);
       lv_obj_set_style_text_color(g_vg.imu_status_label,
                                   lv_color_hex(VG_COLOR_WARN),
                                   LV_PART_MAIN);
