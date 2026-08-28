@@ -35,9 +35,20 @@ config CONTEST2026_148_VELAGUARD_BUTTON_DEVPATH
 	depends on INPUT_BUTTONS
 
 config CONTEST2026_148_VELAGUARD_IMU_DEVPATH
-	string "IMU I2C device path"
-	default "/dev/i2c0"
+	string "IMU sensor device path"
+	default "/dev/lsm6dsl0"
 	depends on I2C_DRIVER
+
+config CONTEST2026_148_VELAGUARD_IMU_LEGACY_I2C
+	bool "Use legacy direct-I2C IMU access (shared I2C1 + pin mux)"
+	default n
+	depends on I2C_DRIVER
+	---help---
+		When enabled, VelaGuard talks to the LSM6DS3TR-C directly over
+		the raw I2C bus shared with the touch controller (I2C1) using
+		GPIO30/pin-mux switching.  Kept for reference only; the default
+		uses the kernel LSM6DSL driver on the dedicated I2C3 bus
+		(/dev/lsm6dsl0).
 
 config CONTEST2026_148_VELAGUARD_COUNTDOWN
 	int "Pre-alert countdown in seconds"
