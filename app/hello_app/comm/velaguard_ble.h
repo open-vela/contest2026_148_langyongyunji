@@ -35,10 +35,16 @@ struct vg_ble_call_packet_s
 
 int vg_ble_init(void);
 void vg_ble_process(void);
+void vg_ble_process_ui(void);
 bool vg_ble_is_connected(void);
+bool vg_ble_is_initialized(void);
 bool vg_ble_is_enabled(void);
+bool vg_ble_is_advertising(void);
+bool vg_ble_has_pending_enable_request(void);
 int vg_ble_set_enabled(bool enabled);
+void vg_ble_request_set_enabled(bool enabled);
 void vg_ble_get_local_address(char *buf, size_t len);
+bool vg_ble_local_address_is_default(void);
 int vg_ble_request_call(uint8_t event_type, uint8_t risk,
                         uint8_t confidence, uint32_t event_id,
                         uint32_t uptime_ms, bool user_confirmed);

@@ -209,7 +209,8 @@ int vg_audio_capture_start(void)
   attr.mq_maxmsg  = 8;
   attr.mq_msgsize = sizeof(struct audio_msg_s);
   attr.mq_flags   = 0;
-  g_vg_audio_mq = mq_open(MQ_NAME, O_RDWR | O_CREAT, 0666, &attr);
+  g_vg_audio_mq = mq_open(MQ_NAME, O_RDWR | O_CREAT | O_NONBLOCK, 0666,
+                          &attr);
   if (g_vg_audio_mq < 0)
     {
       printf("VelaGuard audio: mq_open failed\n");

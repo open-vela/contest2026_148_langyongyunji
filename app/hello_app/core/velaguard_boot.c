@@ -13,6 +13,8 @@ extern int nsh_main(int argc, char *argv[]);
 int velaguard_boot_main(int argc, char *argv[])
 {
   int pid;
+  printf("VelaGuard: boot entry\n");
+  fflush(stdout);
 
   pid = task_create("velaguard",
                     CONFIG_CONTEST2026_148_VELAGUARD_PRIORITY,
@@ -26,6 +28,7 @@ int velaguard_boot_main(int argc, char *argv[])
     {
       printf("VelaGuard: automatic startup task=%d\n", pid);
     }
+  fflush(stdout);
 
   /* Keep the shell available for IMU tests and field diagnostics. */
 

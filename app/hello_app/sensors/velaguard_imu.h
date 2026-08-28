@@ -13,6 +13,9 @@
  ****************************************************************************/
 
 #include <stdint.h>
+#include <stdbool.h>
+
+#include "velaguard_fall.h"
 
 /****************************************************************************
  * Public Types
@@ -36,6 +39,19 @@ struct vg_imu_sample_s
   int32_t gz_dps;
 };
 
+struct vg_imu_guard_status_s
+{
+  bool ready;
+  int last_error;
+  int mag_mg;
+  int gyro_dps;
+  int detector_state;
+  int peak_mg;
+  int peak_gyro_dps;
+  int posture_delta_deg;
+  int still_ms;
+};
+
 /****************************************************************************
  * Public Function Prototypes
  ****************************************************************************/
@@ -49,5 +65,9 @@ int vg_imu_read_guarded(struct vg_imu_s *imu,
 int vg_imu_scan(void);
 int vg_imu_selftest(const char *devpath, int nsamples);
 int vg_imu_fall_watch(const char *devpath, int seconds);
+int vg_imu_guard_start(const char *devpath, int priority, int stacksize);
+void vg_imu_guard_set_enabled(bool enabled);
+void vg_imu_guard_get_status(struct vg_imu_guard_status_s *status);
+bool vg_imu_guard_take_fall_result(struct vg_fall_result_s *result);
 
 #endif

@@ -16,10 +16,12 @@
 #include "bf0_hal_pinmux.h"
 
 #include <nuttx/i2c/i2c_master.h>
+#include <nuttx/sched.h>
 
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -37,13 +39,25 @@
 #define LSM6DS3_WHO_AM_I      0x0f
 #define LSM6DS3_WHO_AM_I_VAL  0x69
 #define LSM6DSL_WHO_AM_I_VAL  0x6a
+#define LSM6DS3_FIFO_CTRL1    0x06
+#define LSM6DS3_FIFO_CTRL2    0x07
+#define LSM6DS3_FIFO_CTRL3    0x08
+#define LSM6DS3_FIFO_CTRL5    0x0a
 #define LSM6DS3_CTRL1_XL      0x10
 #define LSM6DS3_CTRL2_G       0x11
 #define LSM6DS3_CTRL3_C       0x12
 #define LSM6DS3_OUTX_L_G      0x22
+#define LSM6DS3_FIFO_STATUS1  0x3a
+#define LSM6DS3_FIFO_DATA_OUT 0x3e
 
-#define VG_IMU_FALL_PERIOD_MS 50
+#define VG_IMU_FALL_PERIOD_MS 100
+#define VG_IMU_GUARD_SAMPLE_US 200000
+#define VG_IMU_FIFO_SAMPLE_MS  10
+#define VG_IMU_FIFO_WORDS_PER_SAMPLE 6
+#define VG_IMU_FIFO_BYTES_PER_SAMPLE 12
+#define VG_IMU_FIFO_MAX_SAMPLES 24
 #define VG_IMU_PIN_SETTLE_US  500
+#define VG_IMU_GUARD_DEVPATH_MAX 32
 
 /****************************************************************************
  * Private Function Prototypes
@@ -52,16 +66,64 @@
 extern void BSP_GPIO_Set(int pin, int val, int is_porta);
 extern void BSP_PIN_Touch(void);
 
-__attribute__((weak))
+static int vg_imu_read_fifo_guarded(struct vg_imu_s *imu,
+                                    struct vg_imu_sample_s *samples,
+                                    int max_samples);
+
+static pthread_mutex_t g_sf32lb52_i2c1_mux_lock = PTHREAD_MUTEX_INITIALIZER;
+
 int sf32lb52_i2c1_mux_lock(void)
 {
-  return 0;
+  return pthread_mutex_lock(&g_sf32lb52_i2c1_mux_lock);
 }
 
-__attribute__((weak))
 int sf32lb52_i2c1_mux_unlock(void)
 {
-  return 0;
+  return pthread_mutex_unlock(&g_sf32lb52_i2c1_mux_lock);
+}
+
+struct vg_imu_guard_s
+{
+  struct vg_imu_guard_status_s status;
+  struct vg_fall_detector_s detector;
+  struct vg_fall_result_s pending_result;
+  char devpath[VG_IMU_GUARD_DEVPATH_MAX];
+  bool enabled;
+  bool result_pending;
+  bool started;
+};
+
+static struct vg_imu_guard_s g_vg_imu_guard;
+static pthread_mutex_t g_vg_imu_guard_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void vg_imu_guard_lock(void)
+{
+  pthread_mutex_lock(&g_vg_imu_guard_lock);
+}
+
+static void vg_imu_guard_unlock(void)
+{
+  pthread_mutex_unlock(&g_vg_imu_guard_lock);
+}
+
+static bool vg_imu_guard_is_enabled(void)
+{
+  bool enabled;
+
+  vg_imu_guard_lock();
+  enabled = g_vg_imu_guard.enabled;
+  vg_imu_guard_unlock();
+  return enabled;
+}
+
+static bool vg_imu_guard_has_pending_result(void)
+{
+  bool pending;
+
+  vg_imu_guard_lock();
+  pending = g_vg_imu_guard.result_pending;
+  vg_imu_guard_unlock();
+  return pending;
 }
 
 /****************************************************************************
@@ -143,6 +205,156 @@ static void vg_imu_to_fall_sample(const struct vg_imu_sample_s *imu,
   fall->gz_dps = imu->gz_dps;
 }
 
+static void vg_imu_guard_reset_detector(void)
+{
+  vg_fall_init(&g_vg_imu_guard.detector);
+
+  vg_imu_guard_lock();
+  g_vg_imu_guard.status.detector_state = 0;
+  g_vg_imu_guard.status.peak_mg = 0;
+  g_vg_imu_guard.status.peak_gyro_dps = 0;
+  g_vg_imu_guard.status.posture_delta_deg = 0;
+  g_vg_imu_guard.status.still_ms = 0;
+  vg_imu_guard_unlock();
+}
+
+static void vg_imu_guard_set_error(int error)
+{
+  vg_imu_guard_lock();
+  g_vg_imu_guard.status.ready = false;
+  g_vg_imu_guard.status.last_error = error;
+  vg_imu_guard_unlock();
+}
+
+static void vg_imu_guard_set_ready(void)
+{
+  vg_imu_guard_lock();
+  g_vg_imu_guard.status.ready = true;
+  g_vg_imu_guard.status.last_error = 0;
+  vg_imu_guard_unlock();
+}
+
+static void vg_imu_guard_update_sample(const struct vg_fall_sample_s *sample)
+{
+  vg_imu_guard_lock();
+  g_vg_imu_guard.status.mag_mg = vg_fall_accel_mag_mg(sample);
+  g_vg_imu_guard.status.gyro_dps = vg_fall_gyro_sum_dps(sample);
+  vg_imu_guard_unlock();
+}
+
+static void vg_imu_guard_update_detector(void)
+{
+  vg_imu_guard_lock();
+  g_vg_imu_guard.status.detector_state = g_vg_imu_guard.detector.state;
+  g_vg_imu_guard.status.peak_mg = g_vg_imu_guard.detector.peak_mg;
+  g_vg_imu_guard.status.peak_gyro_dps =
+      g_vg_imu_guard.detector.peak_gyro_dps;
+  g_vg_imu_guard.status.posture_delta_deg =
+      g_vg_imu_guard.detector.posture_delta_deg;
+  g_vg_imu_guard.status.still_ms = g_vg_imu_guard.detector.still_ms;
+  vg_imu_guard_unlock();
+}
+
+static void vg_imu_guard_queue_fall_result(
+  const struct vg_fall_result_s *result)
+{
+  vg_imu_guard_lock();
+  if (!g_vg_imu_guard.result_pending)
+    {
+      g_vg_imu_guard.pending_result = *result;
+      g_vg_imu_guard.result_pending = true;
+    }
+  vg_imu_guard_unlock();
+}
+
+static int vg_imu_guard_task(int argc, char *argv[])
+{
+  struct vg_imu_s imu;
+  struct vg_imu_sample_s imu_samples[VG_IMU_FIFO_MAX_SAMPLES];
+  struct vg_fall_sample_s fall_sample;
+  struct vg_fall_result_s fall_result;
+  int nsamples;
+  int i;
+  int ret;
+
+  UNUSED(argc);
+  UNUSED(argv);
+
+  for (; ; )
+    {
+      ret = vg_imu_open_guarded(&imu, g_vg_imu_guard.devpath);
+      if (ret >= 0)
+        {
+          break;
+        }
+
+      vg_imu_guard_set_error(ret);
+      printf("VelaGuard IMU task: open/probe failed: %d\n", ret);
+      usleep(500000);
+    }
+
+  vg_imu_guard_set_ready();
+  printf("VelaGuard IMU task: addr=0x%02x whoami=0x%02x\n",
+         imu.addr, imu.whoami);
+
+  for (; ; )
+    {
+      if (!vg_imu_guard_is_enabled())
+        {
+          vg_imu_guard_reset_detector();
+          usleep(100000);
+          continue;
+        }
+
+      if (vg_imu_guard_has_pending_result())
+        {
+          usleep(VG_IMU_GUARD_SAMPLE_US);
+          continue;
+        }
+
+      ret = vg_imu_read_fifo_guarded(&imu, imu_samples,
+                                     VG_IMU_FIFO_MAX_SAMPLES);
+      if (ret < 0)
+        {
+          vg_imu_guard_set_error(ret);
+          printf("VelaGuard IMU task: FIFO read failed: %d\n", ret);
+          usleep(100000);
+          continue;
+        }
+
+      nsamples = ret;
+      if (nsamples == 0)
+        {
+          usleep(VG_IMU_GUARD_SAMPLE_US);
+          continue;
+        }
+
+      vg_imu_guard_set_ready();
+
+      for (i = 0; i < nsamples; i++)
+        {
+          vg_imu_to_fall_sample(&imu_samples[i], &fall_sample);
+          vg_imu_guard_update_sample(&fall_sample);
+
+          if (vg_fall_process(&g_vg_imu_guard.detector, &fall_sample,
+                              &fall_result))
+            {
+              vg_imu_guard_update_detector();
+              printf("VelaGuard IMU task: fall detected %s\n",
+                     fall_result.reason);
+              vg_imu_guard_queue_fall_result(&fall_result);
+              break;
+            }
+
+          vg_imu_guard_update_detector();
+        }
+
+      usleep(VG_IMU_GUARD_SAMPLE_US);
+    }
+
+  return 0;
+}
+
 static void vg_imu_select_pins(void)
 {
   /* Huangshan Pi shares I2C1 controller between touch and IMU pin groups.
@@ -179,7 +391,7 @@ static int vg_i2c_transfer(int fd, struct i2c_msg_s *msgs, int msgc)
 }
 
 static int vg_imu_read_reg(int fd, uint8_t addr, uint8_t reg,
-                           uint8_t *buffer, uint8_t length)
+                           uint8_t *buffer, uint16_t length)
 {
   struct i2c_msg_s msgs[2];
   int ret;
@@ -245,6 +457,12 @@ static int vg_imu_configure(struct vg_imu_s *imu)
 {
   int ret;
 
+  ret = vg_imu_write_reg(imu->fd, imu->addr, LSM6DS3_FIFO_CTRL5, 0x00);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
   /* BDU + auto-increment register address. */
 
   ret = vg_imu_write_reg(imu->fd, imu->addr, LSM6DS3_CTRL3_C, 0x44);
@@ -253,7 +471,10 @@ static int vg_imu_configure(struct vg_imu_s *imu)
       return ret;
     }
 
-  /* Accelerometer: 104 Hz, +-8 g. */
+  /* Accelerometer: 104 Hz, +-8 g. The guard task samples every 100 ms to
+   * reduce contention with the FT6146 touch controller on the shared I2C1
+   * pinmux.
+   */
 
   ret = vg_imu_write_reg(imu->fd, imu->addr, LSM6DS3_CTRL1_XL, 0x4c);
   if (ret < 0)
@@ -264,6 +485,35 @@ static int vg_imu_configure(struct vg_imu_s *imu)
   /* Gyroscope: 104 Hz, 2000 dps. */
 
   ret = vg_imu_write_reg(imu->fd, imu->addr, LSM6DS3_CTRL2_G, 0x4c);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  ret = vg_imu_write_reg(imu->fd, imu->addr, LSM6DS3_FIFO_CTRL1, 0x00);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  ret = vg_imu_write_reg(imu->fd, imu->addr, LSM6DS3_FIFO_CTRL2, 0x00);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  /* Batch accelerometer and gyroscope at the sensor ODR, then let the guard
+   * task drain FIFO in short windows so touch keeps ownership of I2C1 most of
+   * the time.
+   */
+
+  ret = vg_imu_write_reg(imu->fd, imu->addr, LSM6DS3_FIFO_CTRL3, 0x09);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  ret = vg_imu_write_reg(imu->fd, imu->addr, LSM6DS3_FIFO_CTRL5, 0x26);
   if (ret < 0)
     {
       return ret;
@@ -320,6 +570,82 @@ int vg_imu_open(struct vg_imu_s *imu, const char *devpath)
   return -ENODEV;
 }
 
+int vg_imu_guard_start(const char *devpath, int priority, int stacksize)
+{
+  int pid;
+
+  if (devpath == NULL)
+    {
+      return -EINVAL;
+    }
+
+  vg_imu_guard_lock();
+  if (g_vg_imu_guard.started)
+    {
+      vg_imu_guard_unlock();
+      return -EEXIST;
+    }
+
+  memset(&g_vg_imu_guard, 0, sizeof(g_vg_imu_guard));
+  snprintf(g_vg_imu_guard.devpath, sizeof(g_vg_imu_guard.devpath),
+           "%s", devpath);
+  g_vg_imu_guard.status.last_error = -EINPROGRESS;
+  vg_fall_init(&g_vg_imu_guard.detector);
+  g_vg_imu_guard.started = true;
+  vg_imu_guard_unlock();
+
+  pid = task_create("vg_imu", priority, stacksize, vg_imu_guard_task, NULL);
+  if (pid < 0)
+    {
+      vg_imu_guard_lock();
+      g_vg_imu_guard.started = false;
+      vg_imu_guard_unlock();
+      return pid;
+    }
+
+  return 0;
+}
+
+void vg_imu_guard_set_enabled(bool enabled)
+{
+  vg_imu_guard_lock();
+  g_vg_imu_guard.enabled = enabled;
+  vg_imu_guard_unlock();
+}
+
+void vg_imu_guard_get_status(struct vg_imu_guard_status_s *status)
+{
+  if (status == NULL)
+    {
+      return;
+    }
+
+  vg_imu_guard_lock();
+  *status = g_vg_imu_guard.status;
+  vg_imu_guard_unlock();
+}
+
+bool vg_imu_guard_take_fall_result(struct vg_fall_result_s *result)
+{
+  bool have_result;
+
+  if (result == NULL)
+    {
+      return false;
+    }
+
+  vg_imu_guard_lock();
+  have_result = g_vg_imu_guard.result_pending;
+  if (have_result)
+    {
+      *result = g_vg_imu_guard.pending_result;
+      g_vg_imu_guard.result_pending = false;
+    }
+  vg_imu_guard_unlock();
+
+  return have_result;
+}
+
 int vg_imu_open_guarded(struct vg_imu_s *imu, const char *devpath)
 {
   int ret;
@@ -346,15 +672,35 @@ void vg_imu_close(struct vg_imu_s *imu)
     }
 }
 
-int vg_imu_read(struct vg_imu_s *imu, struct vg_imu_sample_s *sample)
+static void vg_imu_decode_sample(const uint8_t *data, uint32_t timestamp_ms,
+                                 struct vg_imu_sample_s *sample)
 {
-  uint8_t data[12];
   int16_t gx;
   int16_t gy;
   int16_t gz;
   int16_t ax;
   int16_t ay;
   int16_t az;
+
+  gx = vg_i16_le(&data[0]);
+  gy = vg_i16_le(&data[2]);
+  gz = vg_i16_le(&data[4]);
+  ax = vg_i16_le(&data[6]);
+  ay = vg_i16_le(&data[8]);
+  az = vg_i16_le(&data[10]);
+
+  sample->timestamp_ms = timestamp_ms;
+  sample->ax_mg = ((int32_t)ax * 244 + (ax >= 0 ? 500 : -500)) / 1000;
+  sample->ay_mg = ((int32_t)ay * 244 + (ay >= 0 ? 500 : -500)) / 1000;
+  sample->az_mg = ((int32_t)az * 244 + (az >= 0 ? 500 : -500)) / 1000;
+  sample->gx_dps = ((int32_t)gx * 70 + (gx >= 0 ? 500 : -500)) / 1000;
+  sample->gy_dps = ((int32_t)gy * 70 + (gy >= 0 ? 500 : -500)) / 1000;
+  sample->gz_dps = ((int32_t)gz * 70 + (gz >= 0 ? 500 : -500)) / 1000;
+}
+
+int vg_imu_read(struct vg_imu_s *imu, struct vg_imu_sample_s *sample)
+{
+  uint8_t data[VG_IMU_FIFO_BYTES_PER_SAMPLE];
   int ret;
 
   ret = vg_imu_read_reg(imu->fd, imu->addr, LSM6DS3_OUTX_L_G,
@@ -364,22 +710,91 @@ int vg_imu_read(struct vg_imu_s *imu, struct vg_imu_sample_s *sample)
       return ret;
     }
 
-  gx = vg_i16_le(&data[0]);
-  gy = vg_i16_le(&data[2]);
-  gz = vg_i16_le(&data[4]);
-  ax = vg_i16_le(&data[6]);
-  ay = vg_i16_le(&data[8]);
-  az = vg_i16_le(&data[10]);
-
-  sample->timestamp_ms = vg_imu_uptime_ms();
-  sample->ax_mg = ((int32_t)ax * 244 + (ax >= 0 ? 500 : -500)) / 1000;
-  sample->ay_mg = ((int32_t)ay * 244 + (ay >= 0 ? 500 : -500)) / 1000;
-  sample->az_mg = ((int32_t)az * 244 + (az >= 0 ? 500 : -500)) / 1000;
-  sample->gx_dps = ((int32_t)gx * 70 + (gx >= 0 ? 500 : -500)) / 1000;
-  sample->gy_dps = ((int32_t)gy * 70 + (gy >= 0 ? 500 : -500)) / 1000;
-  sample->gz_dps = ((int32_t)gz * 70 + (gz >= 0 ? 500 : -500)) / 1000;
+  vg_imu_decode_sample(data, vg_imu_uptime_ms(), sample);
 
   return 0;
+}
+
+static int vg_imu_read_fifo(struct vg_imu_s *imu,
+                            struct vg_imu_sample_s *samples,
+                            int max_samples)
+{
+  uint8_t status[2];
+  uint8_t data[VG_IMU_FIFO_BYTES_PER_SAMPLE];
+  uint8_t word[2];
+  uint32_t now_ms;
+  int words;
+  int nsamples;
+  int i;
+  int j;
+  int ret;
+
+  if (max_samples > VG_IMU_FIFO_MAX_SAMPLES)
+    {
+      max_samples = VG_IMU_FIFO_MAX_SAMPLES;
+    }
+
+  ret = vg_imu_read_reg(imu->fd, imu->addr, LSM6DS3_FIFO_STATUS1,
+                        status, sizeof(status));
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  words = status[0] | ((status[1] & 0x0f) << 8);
+  nsamples = words / VG_IMU_FIFO_WORDS_PER_SAMPLE;
+  if (nsamples <= 0)
+    {
+      return 0;
+    }
+
+  if (nsamples > max_samples)
+    {
+      nsamples = max_samples;
+    }
+
+  now_ms = vg_imu_uptime_ms();
+  for (i = 0; i < nsamples; i++)
+    {
+      uint32_t ts = now_ms -
+        (uint32_t)(nsamples - i - 1) * VG_IMU_FIFO_SAMPLE_MS;
+
+      for (j = 0; j < VG_IMU_FIFO_WORDS_PER_SAMPLE; j++)
+        {
+          ret = vg_imu_read_reg(imu->fd, imu->addr, LSM6DS3_FIFO_DATA_OUT,
+                                word, sizeof(word));
+          if (ret < 0)
+            {
+              return ret;
+            }
+
+          data[j * 2] = word[0];
+          data[j * 2 + 1] = word[1];
+        }
+
+      vg_imu_decode_sample(data, ts, &samples[i]);
+    }
+
+  return nsamples;
+}
+
+static int vg_imu_read_fifo_guarded(struct vg_imu_s *imu,
+                                    struct vg_imu_sample_s *samples,
+                                    int max_samples)
+{
+  int ret;
+
+  ret = sf32lb52_i2c1_mux_lock();
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  vg_imu_select_pins();
+  ret = vg_imu_read_fifo(imu, samples, max_samples);
+  vg_imu_restore_touch_pins();
+  sf32lb52_i2c1_mux_unlock();
+  return ret;
 }
 
 int vg_imu_read_guarded(struct vg_imu_s *imu,
@@ -467,7 +882,7 @@ int vg_imu_fall_watch(const char *devpath, int seconds)
 
   printf("VelaGuard Fall: watching real IMU for %d seconds, sample=%dms\n",
          seconds, VG_IMU_FALL_PERIOD_MS);
-  printf("VelaGuard Fall: actions: keep still 2s, simulate fall on soft pad, then keep still 2s\n");
+  printf("VelaGuard Fall: actions: keep still 2s, simulate fall on soft pad, then keep still 5s\n");
   printf("VelaGuard IMU: switch I2C1 pins to IMU SCL=PA40 SDA=PA39 PWR=PA30\n");
   vg_imu_select_pins();
 

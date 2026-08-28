@@ -23,9 +23,9 @@
 #define VG_FALL_STATE_IMPACT       2
 
 #define VG_FALL_FREEFALL_MG        650
-#define VG_FALL_FREEFALL_NEED_MS   80
+#define VG_FALL_FREEFALL_NEED_MS   40
 #define VG_FALL_IMPACT_WINDOW_MS   800
-#define VG_FALL_CONFIRM_WINDOW_MS  5000
+#define VG_FALL_CONFIRM_WINDOW_MS  8000
 #define VG_FALL_HARD_IMPACT_MG     1800
 #define VG_FALL_IMPACT_MG          1400
 #define VG_FALL_GYRO_DPS           700
@@ -37,7 +37,8 @@
 #define VG_FALL_STILL_MIN_MG       850
 #define VG_FALL_STILL_MAX_MG       1150
 #define VG_FALL_STILL_GYRO_DPS     110
-#define VG_FALL_STILL_NEED_MS      1200
+#define VG_FALL_STILL_NEED_MS      5000
+#define VG_FALL_DEBUG_LOG_MS       500
 
 /****************************************************************************
  * Private Functions
@@ -293,6 +294,25 @@ static void vg_fill_result(struct vg_fall_detector_s *detector,
            result->posture_delta_deg, result->still_ms);
 }
 
+static void vg_fall_log_wait(struct vg_fall_detector_s *detector,
+                             const struct vg_fall_sample_s *sample,
+                             int mag_mg, int gyro_dps,
+                             const char *stage, const char *detail)
+{
+  if (detector->debug_log_ms != 0 &&
+      sample->timestamp_ms - detector->debug_log_ms < VG_FALL_DEBUG_LOG_MS)
+    {
+      return;
+    }
+
+  detector->debug_log_ms = sample->timestamp_ms;
+  printf("VelaGuard fall: %s %s mag=%d gyro=%d peak=%d/%d posture=%d still=%d state=%d\n",
+         stage, detail, mag_mg, gyro_dps,
+         detector->peak_mg, detector->peak_gyro_dps,
+         detector->posture_delta_deg, detector->still_ms,
+         detector->state);
+}
+
 static int vg_fall_sample_dt_ms(struct vg_fall_detector_s *detector,
                                 const struct vg_fall_sample_s *sample)
 {
@@ -412,7 +432,11 @@ bool vg_fall_process(struct vg_fall_detector_s *detector,
               detector->trigger_gyro_dps = gyro_dps;
               detector->posture_delta_deg = 0;
               detector->still_ms = 0;
+              detector->debug_log_ms = sample->timestamp_ms;
               detector->posture_changed = false;
+              printf("VelaGuard fall: enter freefall mag=%d gyro=%d freefall=%lums\n",
+                     mag_mg, gyro_dps,
+                     (unsigned long)detector->freefall_ms);
             }
         }
       else
@@ -431,7 +455,10 @@ bool vg_fall_process(struct vg_fall_detector_s *detector,
           detector->trigger_gyro_dps = gyro_dps;
           detector->posture_delta_deg = 0;
           detector->still_ms = 0;
+          detector->debug_log_ms = sample->timestamp_ms;
           detector->posture_changed = false;
+          printf("VelaGuard fall: enter impact from idle mag=%d gyro=%d\n",
+                 mag_mg, gyro_dps);
         }
 
       return false;
@@ -442,6 +469,9 @@ bool vg_fall_process(struct vg_fall_detector_s *detector,
       if (sample->timestamp_ms - detector->freefall_start_ms >
           VG_FALL_IMPACT_WINDOW_MS)
         {
+          printf("VelaGuard fall: freefall timeout after %lums\n",
+                 (unsigned long)(sample->timestamp_ms -
+                                 detector->freefall_start_ms));
           vg_fall_init(detector);
           return false;
         }
@@ -449,6 +479,8 @@ bool vg_fall_process(struct vg_fall_detector_s *detector,
       if (mag_mg < VG_FALL_FREEFALL_MG)
         {
           detector->freefall_ms += dt_ms;
+          vg_fall_log_wait(detector, sample, mag_mg, gyro_dps,
+                           "freefall", "waiting impact");
           return false;
         }
 
@@ -462,7 +494,16 @@ bool vg_fall_process(struct vg_fall_detector_s *detector,
           detector->trigger_gyro_dps = gyro_dps;
           detector->posture_delta_deg = 0;
           detector->still_ms = 0;
+          detector->debug_log_ms = sample->timestamp_ms;
           detector->posture_changed = false;
+          printf("VelaGuard fall: enter impact after freefall mag=%d gyro=%d freefall=%lums\n",
+                 mag_mg, gyro_dps,
+                 (unsigned long)detector->freefall_ms);
+        }
+      else
+        {
+          vg_fall_log_wait(detector, sample, mag_mg, gyro_dps,
+                           "freefall", "impact not confirmed");
         }
 
       return false;
@@ -471,6 +512,8 @@ bool vg_fall_process(struct vg_fall_detector_s *detector,
   if (sample->timestamp_ms - detector->impact_ms >
       VG_FALL_CONFIRM_WINDOW_MS)
     {
+      printf("VelaGuard fall: impact timeout after %lums\n",
+             (unsigned long)(sample->timestamp_ms - detector->impact_ms));
       vg_fall_init(detector);
       return false;
     }
@@ -508,6 +551,10 @@ bool vg_fall_process(struct vg_fall_detector_s *detector,
       detector->still_ms = 0;
     }
 
+  vg_fall_log_wait(detector, sample, mag_mg, gyro_dps,
+                   "impact", detector->posture_changed ?
+                   "waiting stillness" : "waiting posture");
+
   if (detector->posture_changed &&
       detector->still_ms >= VG_FALL_STILL_NEED_MS)
     {
@@ -516,6 +563,9 @@ bool vg_fall_process(struct vg_fall_detector_s *detector,
           vg_fill_result(detector, result);
         }
 
+      printf("VelaGuard fall: confirm detected peak=%d gyro=%d posture=%d still=%d\n",
+             detector->peak_mg, detector->peak_gyro_dps,
+             detector->posture_delta_deg, detector->still_ms);
       vg_fall_init(detector);
       return true;
     }
@@ -556,6 +606,7 @@ bool vg_fall_run_demo(struct vg_fall_result_s *result)
 
   struct vg_fall_detector_s detector;
   struct vg_fall_result_s local;
+  struct vg_fall_sample_s still_sample;
   int i;
 
   if (result == NULL)
@@ -567,6 +618,22 @@ bool vg_fall_run_demo(struct vg_fall_result_s *result)
   for (i = 0; i < (int)(sizeof(samples) / sizeof(samples[0])); i++)
     {
       if (vg_fall_process(&detector, &samples[i], result))
+        {
+          return true;
+        }
+    }
+
+  for (i = 2500; i <= 7000; i += 100)
+    {
+      still_sample.timestamp_ms = i;
+      still_sample.ax_mg = 995;
+      still_sample.ay_mg = 85;
+      still_sample.az_mg = 170;
+      still_sample.gx_dps = 2;
+      still_sample.gy_dps = 2;
+      still_sample.gz_dps = 3;
+
+      if (vg_fall_process(&detector, &still_sample, result))
         {
           return true;
         }

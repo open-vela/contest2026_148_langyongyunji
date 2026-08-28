@@ -72,13 +72,14 @@ CONFIG_BT=y
 CONFIG_BT_CLASSIC=y
 CONFIG_BT_H4=y
 CONFIG_BT_EXT_ADV=y
+CONFIG_BT_EXT_ADV_LEGACY_SUPPORT=y
 # CONFIG_BT_HCI_ACL_FLOW_CONTROL is not set
 CONFIG_BT_POWER_MODE_CONTROL=y
 CONFIG_BT_GATT_CLIENT=y
-# zblue host (id.c:bt_setup_public_id_addr) references bt_dev.irk
-# unconditionally, and irk is only present when CONFIG_BT_PRIVACY is
-# enabled.  Keep privacy enabled to satisfy the build.
-CONFIG_BT_PRIVACY=y
+# VelaGuard uses a fixed phone-facing peripheral identity.  Avoid RPA/random
+# address refresh during advertising restart; SF32LB52 may timeout on
+# LE Set Random Address while restarting advertising after disconnect.
+# CONFIG_BT_PRIVACY is not set
 # Allow optional Just Works bonding for generic BLE tools.  The VelaGuard
 # application protocol itself does not require pairing or encryption.
 # CONFIG_BT_SMP_ENFORCE_MITM is not set
@@ -243,12 +244,16 @@ CONFIG_LVX_USE_DEMO_CONTEST2026_148_VELAGUARD=y
 CONFIG_CONTEST2026_148_DENOISE=y
 CONFIG_AUDIO=y
 CONFIG_AUDIO_FORMAT_PCM=y
+CONFIG_CONTEST2026_148_VELAGUARD_STACKSIZE=65536
 CONFIG_CONTEST2026_148_VELAGUARD_INPUT_POLL_MS=16
 CONFIG_CONTEST2026_148_VELAGUARD_LOOP_SLEEP_MAX_MS=8
 CONFIG_EXAMPLES_TOUCHSCREEN=y
 CONFIG_LV_USE_CLIB_MALLOC=y
 CONFIG_LV_USE_CLIB_SPRINTF=y
 CONFIG_LV_USE_CLIB_STRING=y
+CONFIG_LV_DRAW_TASK_LINEAR_ALLOCATOR=y
+CONFIG_LV_DRAW_TASK_USE_ALLOCATOR=1
+CONFIG_LV_DRAW_TASK_LINEAR_ALLOCATOR_SIZE=16384
 CONFIG_LV_USE_DEMO_WIDGETS=y
 # CONFIG_LV_USE_LOG is not set
 CONFIG_LV_USE_NUTTX=y

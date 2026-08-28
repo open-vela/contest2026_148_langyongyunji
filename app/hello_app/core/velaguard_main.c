@@ -18,6 +18,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <inttypes.h>
+#include <poll.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -29,6 +30,9 @@
 
 #ifdef CONFIG_INPUT_BUTTONS
 #  include <nuttx/input/buttons.h>
+#endif
+#ifdef CONFIG_INPUT_TOUCHSCREEN
+#  include <nuttx/input/touchscreen.h>
 #endif
 
 #include <lvgl/lvgl.h>
@@ -170,7 +174,13 @@ LV_FONT_DECLARE(velaguard_font_30);
 #define VG_DEVICE_WAIT_STEP_MS 100
 #define VG_DEVICE_WAIT_MS      5000
 #define VG_VOICE_REARM_MS       3000
-#define VG_BLE_INIT_STACKSIZE   16384
+#define VG_LIGHTWEIGHT_UI       0
+#define VG_BLE_RETRY_MS         5000
+#define VG_BLE_MAX_INIT_ATTEMPTS 2
+#define VG_BLE_FAIL_BACKOFF_MS  60000
+#define VG_BLE_TASK_STACKSIZE   16384
+#define VG_BLE_TASK_SLEEP_MS    20
+#define VG_LOCAL_TIME_OFFSET_SECONDS (8 * 60 * 60)
 #define VG_BASE_W               240
 #define VG_BASE_H               280
 #define VG_SCREEN_W             390
@@ -219,6 +229,13 @@ enum vg_action_e
   VG_ACTION_DIAL_SIMPLE,
   VG_ACTION_MODE,
   VG_ACTION_BACK,
+};
+
+enum vg_page_e
+{
+  VG_PAGE_HOME = 0,
+  VG_PAGE_BLUETOOTH,
+  VG_PAGE_WATCHFACE_PICKER,
 };
 
 enum vg_mode_e
@@ -278,9 +295,16 @@ struct vg_app_s
   bool sos_prompt_visible;
   bool hold_cancel_active;
   bool hold_confirm_active;
+  bool navigating;
+  bool gesture_consumed;
+  enum vg_page_e current_page;
+  enum vg_page_e target_page;
   uint8_t watchface;
   int home_last_minute;
   int home_last_mday;
+  int home_time_digit[4];
+  int home_date_digit[4];
+  int home_week_digit;
   int alarm_frame;
   lv_obj_t *countdown_label;
   lv_obj_t *countdown_arc;
@@ -319,8 +343,10 @@ static void vg_render_sos_prompt(void);
 static void vg_render_history(void);
 static void vg_render_settings(void);
 static void vg_render_bluetooth(void);
-static void vg_render_watchface_picker(void);
+static void __attribute__((unused)) vg_render_watchface_picker(void);
 static void vg_render_current(void);
+static void vg_nav_request(enum vg_page_e target, lv_dir_t dir,
+                           const char *source);
 static void vg_set_font(lv_obj_t *obj);
 static void vg_trigger_fall_result(const struct vg_fall_result_s *result);
 static void vg_start_prealert(enum vg_event_type_e type, int countdown,
@@ -332,7 +358,20 @@ static void vg_update_alarm_hold(void);
 static void vg_render_fall_hold_progress(enum vg_action_e action);
 static void vg_update_hold_progress_visuals(uint64_t now);
 static void vg_audio_process(void);
-static int vg_ble_init_task(int argc, char *argv[]);
+static int vg_ble_service_task(int argc, char *argv[]);
+
+struct vg_cmd_args_s
+{
+  bool has_initial_event;
+  bool imu_scan;
+  bool imu_test;
+  bool fall_watch;
+  bool touch_test;
+  enum vg_event_type_e initial_event;
+  int imu_samples;
+  int fall_watch_seconds;
+  int touch_samples;
+};
 
 /****************************************************************************
  * Private Data
@@ -437,11 +476,46 @@ static const lv_image_dsc_t *g_touch_week_digits[7] =
   &velaguard_img_icon_touch_future_week_6,
 };
 
-static int vg_ble_init_task(int argc, char *argv[])
+static int vg_ble_service_task(int argc, char *argv[])
 {
+  int failures = 0;
+  int ret;
+
   UNUSED(argc);
   UNUSED(argv);
-  return vg_ble_init();
+
+  for (; ; )
+    {
+      if (!vg_ble_is_initialized())
+        {
+          printf("VelaGuard BLE: service init attempt\n");
+          ret = vg_ble_init();
+          if (ret < 0)
+            {
+              failures++;
+              printf("VelaGuard BLE: service init failed: %d attempt=%d/%d\n",
+                     ret, failures, VG_BLE_MAX_INIT_ATTEMPTS);
+              if (ret == -ENODEV || failures >= VG_BLE_MAX_INIT_ATTEMPTS)
+                {
+                  printf("VelaGuard BLE: init stopped after persistent failure; reset board to retry controller bring-up\n");
+                  for (; ; )
+                    {
+                      usleep(VG_BLE_FAIL_BACKOFF_MS * 1000);
+                    }
+                }
+
+              usleep(VG_BLE_RETRY_MS * 1000);
+              continue;
+            }
+
+          failures = 0;
+        }
+
+      vg_ble_process();
+      usleep(VG_BLE_TASK_SLEEP_MS * 1000);
+    }
+
+  return 0;
 }
 
 /****************************************************************************
@@ -891,9 +965,12 @@ static lv_obj_t *vg_screen_reset(void)
     {
       g_vg.home_time_img[i] = NULL;
       g_vg.home_date_img[i] = NULL;
+      g_vg.home_time_digit[i] = -1;
+      g_vg.home_date_digit[i] = -1;
     }
 
   g_vg.home_week_img = NULL;
+  g_vg.home_week_digit = -1;
   g_vg.home_date_label = NULL;
   g_vg.home_week_label = NULL;
   g_vg.detail_label = NULL;
@@ -906,7 +983,11 @@ static lv_obj_t *vg_screen_reset(void)
 
 static void vg_set_font(lv_obj_t *obj)
 {
+#if VG_LIGHTWEIGHT_UI
+  lv_obj_set_style_text_font(obj, LV_FONT_DEFAULT, LV_PART_MAIN);
+#else
   lv_obj_set_style_text_font(obj, &velaguard_font_30, LV_PART_MAIN);
+#endif
 }
 
 static lv_obj_t *vg_label(lv_obj_t *parent, const char *text, int32_t width,
@@ -950,6 +1031,19 @@ static lv_obj_t *vg_image_at(lv_obj_t *parent,
   return img;
 }
 
+static void vg_image_set_src_if_needed(lv_obj_t *img, int *current,
+                                       int value,
+                                       const lv_image_dsc_t * const *table)
+{
+  if (img == NULL || current == NULL || *current == value)
+    {
+      return;
+    }
+
+  lv_image_set_src(img, table[value]);
+  *current = value;
+}
+
 static lv_obj_t *vg_round_band(lv_obj_t *parent, int32_t x, int32_t y,
                                int32_t w, int32_t h, uint32_t color,
                                const char *text)
@@ -980,9 +1074,18 @@ static void vg_home_event_cb(lv_event_t *event)
 {
   lv_event_code_t code = lv_event_get_code(event);
 
-  if (code == LV_EVENT_LONG_PRESSED)
+  lv_event_stop_bubbling(event);
+
+  if (code == LV_EVENT_PRESSED)
     {
-      vg_render_watchface_picker();
+      g_vg.gesture_consumed = false;
+      printf("VelaGuard UI: home pressed\n");
+      return;
+    }
+  else if (code == LV_EVENT_LONG_PRESSED)
+    {
+      vg_nav_request(VG_PAGE_WATCHFACE_PICKER, LV_DIR_NONE, "home-long");
+      return;
     }
   else if (code == LV_EVENT_GESTURE)
     {
@@ -992,14 +1095,30 @@ static void vg_home_event_cb(lv_event_t *event)
 
       if (dir == LV_DIR_LEFT || dir == LV_DIR_RIGHT)
         {
-          vg_render_bluetooth();
+          vg_nav_request(VG_PAGE_BLUETOOTH, dir, "home-gesture");
+        }
+      else
+        {
+          printf("VelaGuard UI: home gesture dir=%d ignored\n",
+                 (int)dir);
         }
     }
 }
 
 static void vg_bluetooth_event_cb(lv_event_t *event)
 {
-  if (lv_event_get_code(event) == LV_EVENT_GESTURE)
+  lv_event_code_t code = lv_event_get_code(event);
+
+  lv_event_stop_bubbling(event);
+
+  if (code == LV_EVENT_PRESSED)
+    {
+      g_vg.gesture_consumed = false;
+      printf("VelaGuard UI: bluetooth pressed\n");
+      return;
+    }
+
+  if (code == LV_EVENT_GESTURE)
     {
       lv_indev_t *indev = lv_indev_active();
       lv_dir_t dir = indev == NULL ? LV_DIR_NONE :
@@ -1007,7 +1126,12 @@ static void vg_bluetooth_event_cb(lv_event_t *event)
 
       if (dir == LV_DIR_LEFT || dir == LV_DIR_RIGHT)
         {
-          vg_render_home();
+          vg_nav_request(VG_PAGE_HOME, dir, "bluetooth-gesture");
+        }
+      else
+        {
+          printf("VelaGuard UI: bluetooth gesture dir=%d ignored\n",
+                 (int)dir);
         }
     }
 }
@@ -1015,28 +1139,32 @@ static void vg_bluetooth_event_cb(lv_event_t *event)
 static void vg_ble_toggle_event_cb(lv_event_t *event)
 {
   lv_event_code_t code = lv_event_get_code(event);
+  bool target;
   uint64_t now;
-  int ret;
 
-  if (code != LV_EVENT_PRESSED &&
-      code != LV_EVENT_CLICKED &&
-      code != LV_EVENT_RELEASED)
+  if (code != LV_EVENT_CLICKED)
     {
       return;
     }
 
   lv_event_stop_bubbling(event);
+  if (vg_ble_has_pending_enable_request())
+    {
+      printf("VelaGuard UI: BLE toggle ignored while request pending\n");
+      return;
+    }
+
   now = vg_uptime_ms();
   if (g_vg.ble_toggle_last_ms != 0 &&
-      now - g_vg.ble_toggle_last_ms < 200)
+      now - g_vg.ble_toggle_last_ms < 500)
     {
       return;
     }
 
   g_vg.ble_toggle_last_ms = now;
-  ret = vg_ble_set_enabled(!vg_ble_is_enabled());
-  printf("VelaGuard UI: BLE toggle enabled=%d ret=%d\n",
-         vg_ble_is_enabled() ? 1 : 0, ret);
+  target = !vg_ble_is_enabled();
+  vg_ble_request_set_enabled(target);
+  printf("VelaGuard UI: BLE toggle request target=%d\n", target ? 1 : 0);
   vg_render_bluetooth();
 }
 
@@ -1044,6 +1172,72 @@ static lv_obj_t *vg_action_button(lv_obj_t *parent, const char *text,
                                   int32_t x, int32_t y, int32_t w,
                                   int32_t h, uint32_t color,
                                   enum vg_action_e action);
+
+static const char *vg_page_name(enum vg_page_e page)
+{
+  switch (page)
+    {
+      case VG_PAGE_HOME:
+        return "home";
+
+      case VG_PAGE_BLUETOOTH:
+        return "bluetooth";
+
+      case VG_PAGE_WATCHFACE_PICKER:
+        return "watchface";
+
+      default:
+        return "unknown";
+    }
+}
+
+static void vg_nav_request(enum vg_page_e target, lv_dir_t dir,
+                           const char *source)
+{
+  uint64_t begin_ms;
+  uint64_t elapsed_ms;
+
+  printf("VelaGuard UI NAV: request source=%s dir=%d current=%s target=%s busy=%d consumed=%d\n",
+         source, (int)dir, vg_page_name(g_vg.current_page),
+         vg_page_name(target), g_vg.navigating ? 1 : 0,
+         g_vg.gesture_consumed ? 1 : 0);
+
+  if (g_vg.navigating || g_vg.gesture_consumed ||
+      target == g_vg.current_page)
+    {
+      printf("VelaGuard UI NAV: dropped source=%s\n", source);
+      return;
+    }
+
+  g_vg.navigating = true;
+  g_vg.gesture_consumed = true;
+  g_vg.target_page = target;
+  begin_ms = vg_uptime_ms();
+  printf("VelaGuard UI NAV: accepted %s -> %s\n",
+         vg_page_name(g_vg.current_page), vg_page_name(target));
+
+  switch (target)
+    {
+      case VG_PAGE_BLUETOOTH:
+        vg_render_bluetooth();
+        break;
+
+      case VG_PAGE_WATCHFACE_PICKER:
+        vg_render_watchface_picker();
+        break;
+
+      case VG_PAGE_HOME:
+      default:
+        vg_render_home();
+        break;
+    }
+
+  elapsed_ms = vg_uptime_ms() - begin_ms;
+  g_vg.current_page = target;
+  g_vg.navigating = false;
+  printf("VelaGuard UI NAV: finished target=%s elapsed=%llums\n",
+         vg_page_name(target), (unsigned long long)elapsed_ms);
+}
 
 static void vg_action_cb(lv_event_t *event)
 {
@@ -1100,7 +1294,7 @@ static void vg_action_cb(lv_event_t *event)
         break;
 
       case VG_ACTION_BLE_TOGGLE:
-        vg_ble_set_enabled(!vg_ble_is_enabled());
+        vg_ble_request_set_enabled(!vg_ble_is_enabled());
         vg_render_bluetooth();
         break;
 
@@ -1300,12 +1494,15 @@ static void vg_render_header(lv_obj_t *scr, const char *status,
 static void vg_update_watchface_time(void)
 {
   time_t now;
+  time_t display_now;
   struct tm tm_now;
   int hour;
   int minute;
   int month;
   int mday;
   int wday;
+  int time_digits[4];
+  int date_digits[4];
 
   if (g_vg.home_time_img[0] == NULL)
     {
@@ -1313,7 +1510,8 @@ static void vg_update_watchface_time(void)
     }
 
   now = time(NULL);
-  if (localtime_r(&now, &tm_now) == NULL)
+  display_now = now + VG_LOCAL_TIME_OFFSET_SECONDS;
+  if (gmtime_r(&display_now, &tm_now) == NULL)
     {
       return;
     }
@@ -1334,16 +1532,59 @@ static void vg_update_watchface_time(void)
       wday = 0;
     }
 
+  time_digits[0] = hour / 10;
+  time_digits[1] = hour % 10;
+  time_digits[2] = minute / 10;
+  time_digits[3] = minute % 10;
+  date_digits[0] = month / 10;
+  date_digits[1] = month % 10;
+  date_digits[2] = mday / 10;
+  date_digits[3] = mday % 10;
+
+  printf("VelaGuard UI: watchface update time=%d%d:%d%d date=%d%d/%d%d week=%d\n",
+         time_digits[0], time_digits[1], time_digits[2], time_digits[3],
+         date_digits[0], date_digits[1], date_digits[2], date_digits[3],
+         wday);
+
+#if VG_LIGHTWEIGHT_UI
+  if (g_vg.home_date_label != NULL)
+    {
+      char time_line[8];
+
+      snprintf(time_line, sizeof(time_line), "%02d:%02d", hour, minute);
+      lv_label_set_text(g_vg.home_date_label, time_line);
+    }
+
+  if (g_vg.home_week_label != NULL)
+    {
+      char date_line[16];
+
+      snprintf(date_line, sizeof(date_line), "%02d/%02d W%d", month, mday,
+               wday);
+      lv_label_set_text(g_vg.home_week_label, date_line);
+    }
+#else
   if (g_vg.watchface == 0)
     {
-      lv_image_set_src(g_vg.home_time_img[0],
-                       g_rainbow_white_digits[hour / 10]);
-      lv_image_set_src(g_vg.home_time_img[1],
-                       g_rainbow_white_digits[hour % 10]);
-      lv_image_set_src(g_vg.home_time_img[2],
-                       g_rainbow_blue_digits[minute / 10]);
-      lv_image_set_src(g_vg.home_time_img[3],
-                       g_rainbow_blue_digits[minute % 10]);
+      if (g_vg.home_time_img[1] == NULL ||
+          g_vg.home_time_img[2] == NULL ||
+          g_vg.home_time_img[3] == NULL)
+        {
+          return;
+        }
+
+      vg_image_set_src_if_needed(g_vg.home_time_img[0],
+                                 &g_vg.home_time_digit[0], time_digits[0],
+                                 g_rainbow_white_digits);
+      vg_image_set_src_if_needed(g_vg.home_time_img[1],
+                                 &g_vg.home_time_digit[1], time_digits[1],
+                                 g_rainbow_white_digits);
+      vg_image_set_src_if_needed(g_vg.home_time_img[2],
+                                 &g_vg.home_time_digit[2], time_digits[2],
+                                 g_rainbow_blue_digits);
+      vg_image_set_src_if_needed(g_vg.home_time_img[3],
+                                 &g_vg.home_time_digit[3], time_digits[3],
+                                 g_rainbow_blue_digits);
       if (g_vg.home_date_label != NULL)
         {
           char date_line[8];
@@ -1359,25 +1600,47 @@ static void vg_update_watchface_time(void)
     }
   else
     {
-      lv_image_set_src(g_vg.home_time_img[0],
-                       g_touch_hour_digits[hour / 10]);
-      lv_image_set_src(g_vg.home_time_img[1],
-                       g_touch_hour_digits[hour % 10]);
-      lv_image_set_src(g_vg.home_time_img[2],
-                       g_touch_hour_digits[minute / 10]);
-      lv_image_set_src(g_vg.home_time_img[3],
-                       g_touch_hour_digits[minute % 10]);
+      if (g_vg.home_time_img[1] == NULL ||
+          g_vg.home_time_img[2] == NULL ||
+          g_vg.home_time_img[3] == NULL ||
+          g_vg.home_date_img[0] == NULL ||
+          g_vg.home_date_img[1] == NULL ||
+          g_vg.home_date_img[2] == NULL ||
+          g_vg.home_date_img[3] == NULL ||
+          g_vg.home_week_img == NULL)
+        {
+          return;
+        }
 
-      lv_image_set_src(g_vg.home_date_img[0],
-                       g_touch_date_digits[month / 10]);
-      lv_image_set_src(g_vg.home_date_img[1],
-                       g_touch_date_digits[month % 10]);
-      lv_image_set_src(g_vg.home_date_img[2],
-                       g_touch_date_digits[mday / 10]);
-      lv_image_set_src(g_vg.home_date_img[3],
-                       g_touch_date_digits[mday % 10]);
-      lv_image_set_src(g_vg.home_week_img, g_touch_week_digits[wday]);
+      vg_image_set_src_if_needed(g_vg.home_time_img[0],
+                                 &g_vg.home_time_digit[0], time_digits[0],
+                                 g_touch_hour_digits);
+      vg_image_set_src_if_needed(g_vg.home_time_img[1],
+                                 &g_vg.home_time_digit[1], time_digits[1],
+                                 g_touch_hour_digits);
+      vg_image_set_src_if_needed(g_vg.home_time_img[2],
+                                 &g_vg.home_time_digit[2], time_digits[2],
+                                 g_touch_hour_digits);
+      vg_image_set_src_if_needed(g_vg.home_time_img[3],
+                                 &g_vg.home_time_digit[3], time_digits[3],
+                                 g_touch_hour_digits);
+
+      vg_image_set_src_if_needed(g_vg.home_date_img[0],
+                                 &g_vg.home_date_digit[0], date_digits[0],
+                                 g_touch_date_digits);
+      vg_image_set_src_if_needed(g_vg.home_date_img[1],
+                                 &g_vg.home_date_digit[1], date_digits[1],
+                                 g_touch_date_digits);
+      vg_image_set_src_if_needed(g_vg.home_date_img[2],
+                                 &g_vg.home_date_digit[2], date_digits[2],
+                                 g_touch_date_digits);
+      vg_image_set_src_if_needed(g_vg.home_date_img[3],
+                                 &g_vg.home_date_digit[3], date_digits[3],
+                                 g_touch_date_digits);
+      vg_image_set_src_if_needed(g_vg.home_week_img, &g_vg.home_week_digit,
+                                 wday, g_touch_week_digits);
     }
+#endif
 
   g_vg.home_last_minute = tm_now.tm_min;
   g_vg.home_last_mday = tm_now.tm_mday;
@@ -1604,20 +1867,50 @@ static void vg_render_home(void)
 {
   lv_obj_t *scr = vg_screen_reset();
   lv_obj_t *root;
+#if VG_LIGHTWEIGHT_UI
+  lv_obj_t *panel;
+#endif
 
+  g_vg.current_page = VG_PAGE_HOME;
   lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), LV_PART_MAIN);
   lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(scr, vg_home_event_cb, LV_EVENT_LONG_PRESSED, NULL);
   lv_obj_add_event_cb(scr, vg_home_event_cb, LV_EVENT_GESTURE, NULL);
 
   root = vg_fixed_root(scr);
   lv_obj_add_flag(root, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(root, vg_home_event_cb, LV_EVENT_PRESSED, NULL);
   lv_obj_add_event_cb(root, vg_home_event_cb, LV_EVENT_LONG_PRESSED, NULL);
   lv_obj_add_event_cb(root, vg_home_event_cb, LV_EVENT_GESTURE, NULL);
 
   g_vg.home_last_minute = -1;
   g_vg.home_last_mday = -1;
 
+#if VG_LIGHTWEIGHT_UI
+  lv_obj_set_style_bg_color(root, lv_color_hex(0x101820), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(root, LV_OPA_COVER, LV_PART_MAIN);
+
+  panel = lv_obj_create(root);
+  lv_obj_set_size(panel, VG_X(188), VG_Y(104));
+  lv_obj_align(panel, LV_ALIGN_TOP_MID, 0, VG_Y(58));
+  lv_obj_set_style_bg_color(panel, lv_color_hex(0x1f2f3d), LV_PART_MAIN);
+  lv_obj_set_style_border_width(panel, 0, LV_PART_MAIN);
+  lv_obj_set_style_radius(panel, VG_X(10), LV_PART_MAIN);
+  lv_obj_clear_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
+
+  g_vg.home_date_label = vg_label(panel, "--:--", VG_X(160),
+                                  LV_TEXT_ALIGN_CENTER, VG_COLOR_TEXT);
+  lv_obj_set_style_text_font(g_vg.home_date_label, LV_FONT_DEFAULT,
+                             LV_PART_MAIN);
+  lv_obj_align(g_vg.home_date_label, LV_ALIGN_TOP_MID, 0, VG_Y(20));
+
+  g_vg.home_week_label = vg_label(panel, "--/--", VG_X(160),
+                                  LV_TEXT_ALIGN_CENTER, VG_COLOR_MUTED);
+  lv_obj_align(g_vg.home_week_label, LV_ALIGN_TOP_MID, 0, VG_Y(60));
+
+  vg_round_band(root, VG_X(40), VG_Y(188), VG_X(160), VG_Y(40),
+                vg_ble_is_connected() ? VG_COLOR_OK : VG_COLOR_INFO,
+                vg_ble_is_connected() ? "BLE connected" : "VelaGuard");
+#else
   if (g_vg.watchface == 0)
     {
       vg_image_at(root, &velaguard_img_icon_rainbow_rain_bg, 0, 0);
@@ -1670,6 +1963,7 @@ static void vg_render_home(void)
       vg_image_at(root, &velaguard_img_icon_touch_future_battery_5,
                   VG_X(184), VG_Y(248));
     }
+#endif
 
   vg_update_watchface_time();
 }
@@ -1854,12 +2148,14 @@ static void vg_render_bluetooth(void)
   lv_obj_t *dot;
   char addr[40];
 
+  g_vg.current_page = VG_PAGE_BLUETOOTH;
   lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), LV_PART_MAIN);
   lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(scr, vg_bluetooth_event_cb, LV_EVENT_GESTURE, NULL);
 
   root = vg_fixed_root(scr);
   lv_obj_add_flag(root, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_add_event_cb(root, vg_bluetooth_event_cb, LV_EVENT_PRESSED, NULL);
   lv_obj_add_event_cb(root, vg_bluetooth_event_cb, LV_EVENT_GESTURE, NULL);
 
   vg_image_at(root, &velaguard_img_ble_icon, VG_X(18), VG_Y(31));
@@ -1876,9 +2172,7 @@ static void vg_render_bluetooth(void)
   lv_obj_set_style_border_width(sw, 0, LV_PART_MAIN);
   lv_obj_add_flag(sw, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_clear_flag(sw, LV_OBJ_FLAG_SCROLLABLE);
-  lv_obj_add_event_cb(sw, vg_ble_toggle_event_cb, LV_EVENT_PRESSED, NULL);
   lv_obj_add_event_cb(sw, vg_ble_toggle_event_cb, LV_EVENT_CLICKED, NULL);
-  lv_obj_add_event_cb(sw, vg_ble_toggle_event_cb, LV_EVENT_RELEASED, NULL);
 
   dot = lv_obj_create(sw);
   lv_obj_set_size(dot, VG_X(28), VG_X(28));
@@ -1909,7 +2203,7 @@ static void vg_render_bluetooth(void)
 }
 
 
-static void vg_render_watchface_picker(void)
+static void __attribute__((unused)) vg_render_watchface_picker(void)
 {
   lv_obj_t *scr = vg_screen_reset();
   lv_obj_t *root;
@@ -1917,6 +2211,7 @@ static void vg_render_watchface_picker(void)
   lv_obj_t *label;
   lv_obj_t *card;
 
+  g_vg.current_page = VG_PAGE_WATCHFACE_PICKER;
   lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), LV_PART_MAIN);
   root = vg_fixed_root(scr);
 
@@ -2299,6 +2594,124 @@ static int vg_wait_for_device(const char *path, unsigned int timeout_ms)
   return 0;
 }
 
+#ifdef CONFIG_INPUT_TOUCHSCREEN
+static const char *vg_touch_flags(uint8_t flags)
+{
+  if (flags & TOUCH_DOWN)
+    {
+      return "DOWN";
+    }
+
+  if (flags & TOUCH_MOVE)
+    {
+      return "MOVE";
+    }
+
+  if (flags & TOUCH_UP)
+    {
+      return "UP";
+    }
+
+  return "NONE";
+}
+
+static int vg_touch_selftest(const char *path, int samples)
+{
+  struct touch_sample_s sample;
+  struct pollfd pfd;
+  uint64_t last_ms = 0;
+  uint64_t before_ms;
+  uint64_t after_ms;
+  ssize_t nread;
+  int fd;
+  int ret;
+  int count = 0;
+
+  if (samples < 1)
+    {
+      samples = 40;
+    }
+
+  ret = vg_wait_for_device(path, VG_DEVICE_WAIT_MS);
+  if (ret < 0)
+    {
+      return ret;
+    }
+
+  fd = open(path, O_RDONLY | O_NONBLOCK);
+  if (fd < 0)
+    {
+      printf("VelaGuard TOUCH TEST: open %s failed errno=%d\n", path,
+             errno);
+      return -errno;
+    }
+
+  printf("VelaGuard TOUCH TEST: reading %d samples from %s\n",
+         samples, path);
+  while (count < samples)
+    {
+      memset(&sample, 0, sizeof(sample));
+      pfd.fd = fd;
+      pfd.events = POLLIN;
+      pfd.revents = 0;
+
+      ret = poll(&pfd, 1, 2000);
+      if (ret == 0)
+        {
+          printf("VelaGuard TOUCH TEST: idle timeout count=%d\n", count);
+          continue;
+        }
+      else if (ret < 0)
+        {
+          if (errno == EINTR)
+            {
+              continue;
+            }
+
+          printf("VelaGuard TOUCH TEST: poll failed errno=%d\n", errno);
+          close(fd);
+          return -errno;
+        }
+
+      before_ms = vg_uptime_ms();
+      nread = read(fd, &sample, sizeof(sample));
+      after_ms = vg_uptime_ms();
+      if (nread < 0)
+        {
+          if (errno == EAGAIN || errno == EINTR)
+            {
+              continue;
+            }
+
+          printf("VelaGuard TOUCH TEST: read failed errno=%d\n", errno);
+          close(fd);
+          return -errno;
+        }
+
+      if (nread != sizeof(sample))
+        {
+          printf("VelaGuard TOUCH TEST: short read=%zd expected=%zu\n",
+                 nread, sizeof(sample));
+          continue;
+        }
+
+      printf("VelaGuard TOUCH TEST: #%d event=%s flags=0x%02x points=%ld x=%d y=%d dt=%llums read=%llums ts=%llu\n",
+             count + 1, vg_touch_flags(sample.point[0].flags),
+             sample.point[0].flags, (long)sample.npoints,
+             sample.point[0].x, sample.point[0].y,
+             last_ms == 0 ? 0 :
+             (unsigned long long)(after_ms - last_ms),
+             (unsigned long long)(after_ms - before_ms),
+             (unsigned long long)sample.point[0].timestamp);
+      last_ms = after_ms;
+      count++;
+    }
+
+  close(fd);
+  return 0;
+}
+#endif
+
 static void vg_audio_headless_loop(void)
 {
   unsigned int report_ms = 0;
@@ -2356,7 +2769,95 @@ static enum vg_event_type_e vg_parse_demo_type(const char *arg)
 
 static void vg_usage(void)
 {
-  printf("用法: velaguard [--demo fall|sound|voice|sos] [--imu-scan] [--imu-test [n]] [--fall-watch [seconds]]\n");
+  printf("用法: velaguard [--demo fall|sound|voice|sos] [--imu-scan] [--imu-test [n]] [--fall-watch [seconds]] [--touch-test [n]]\n");
+}
+
+static bool vg_arg_is_number(const char *arg)
+{
+  return arg != NULL && arg[0] >= '0' && arg[0] <= '9';
+}
+
+static void vg_cmd_args_init(struct vg_cmd_args_s *args)
+{
+  memset(args, 0, sizeof(*args));
+  args->initial_event = VG_EVENT_FALL;
+  args->imu_samples = 30;
+  args->fall_watch_seconds = 30;
+  args->touch_samples = 40;
+}
+
+static int vg_parse_args(int argc, FAR char *argv[],
+                         struct vg_cmd_args_s *args)
+{
+  int i;
+
+  vg_cmd_args_init(args);
+
+  for (i = 1; i < argc; i++)
+    {
+      if (strcmp(argv[i], "--help") == 0)
+        {
+          vg_usage();
+          return 1;
+        }
+      else if (strcmp(argv[i], "--demo") == 0 && i + 1 < argc)
+        {
+          args->initial_event = vg_parse_demo_type(argv[++i]);
+          args->has_initial_event = true;
+        }
+      else if (strcmp(argv[i], "--imu-test") == 0)
+        {
+          args->imu_test = true;
+          if (i + 1 < argc && vg_arg_is_number(argv[i + 1]))
+            {
+              args->imu_samples = atoi(argv[++i]);
+              if (args->imu_samples < 1)
+                {
+                  args->imu_samples = 1;
+                }
+            }
+        }
+      else if (strcmp(argv[i], "--imu-scan") == 0)
+        {
+          args->imu_scan = true;
+        }
+      else if (strcmp(argv[i], "--fall-watch") == 0)
+        {
+          args->fall_watch = true;
+          if (i + 1 < argc && vg_arg_is_number(argv[i + 1]))
+            {
+              args->fall_watch_seconds = atoi(argv[++i]);
+              if (args->fall_watch_seconds < 1)
+                {
+                  args->fall_watch_seconds = 30;
+                }
+            }
+        }
+      else if (strcmp(argv[i], "--touch-test") == 0)
+        {
+#ifdef CONFIG_INPUT_TOUCHSCREEN
+          args->touch_test = true;
+          if (i + 1 < argc && vg_arg_is_number(argv[i + 1]))
+            {
+              args->touch_samples = atoi(argv[++i]);
+              if (args->touch_samples < 1)
+                {
+                  args->touch_samples = 40;
+                }
+            }
+#else
+          printf("VelaGuard: touch test unavailable; INPUT_TOUCHSCREEN disabled\n");
+          return -EINVAL;
+#endif
+        }
+      else
+        {
+          vg_usage();
+          return -EINVAL;
+        }
+    }
+
+  return 0;
 }
 
 /****************************************************************************
@@ -2367,85 +2868,54 @@ int main(int argc, FAR char *argv[])
 {
   lv_nuttx_dsc_t info;
   lv_nuttx_result_t result;
-  bool has_initial_event = false;
-  bool imu_scan = false;
-  bool imu_test = false;
-  bool fall_watch = false;
+  struct vg_cmd_args_s args;
   bool input_ready = false;
-  enum vg_event_type_e initial_event = VG_EVENT_FALL;
-  int imu_samples = 30;
-  int fall_watch_seconds = 30;
-  int i;
+  int ret;
+  int warmup;
 
-  for (i = 1; i < argc; i++)
+  ret = vg_parse_args(argc, argv, &args);
+  if (ret > 0)
     {
-      if (strcmp(argv[i], "--help") == 0)
-        {
-          vg_usage();
-          return 0;
-        }
-      else if (strcmp(argv[i], "--demo") == 0 && i + 1 < argc)
-        {
-          initial_event = vg_parse_demo_type(argv[++i]);
-          has_initial_event = true;
-        }
-      else if (strcmp(argv[i], "--imu-test") == 0)
-        {
-          imu_test = true;
-          if (i + 1 < argc && argv[i + 1][0] >= '0' &&
-              argv[i + 1][0] <= '9')
-            {
-              imu_samples = atoi(argv[++i]);
-              if (imu_samples < 1)
-                {
-                  imu_samples = 1;
-                }
-            }
-        }
-      else if (strcmp(argv[i], "--imu-scan") == 0)
-        {
-          imu_scan = true;
-        }
-      else if (strcmp(argv[i], "--fall-watch") == 0)
-        {
-          fall_watch = true;
-          if (i + 1 < argc && argv[i + 1][0] >= '0' &&
-              argv[i + 1][0] <= '9')
-            {
-              fall_watch_seconds = atoi(argv[++i]);
-              if (fall_watch_seconds < 1)
-                {
-                  fall_watch_seconds = 30;
-                }
-            }
-        }
-      else
-        {
-          vg_usage();
-          return 1;
-        }
+      return 0;
+    }
+  else if (ret < 0)
+    {
+      return 1;
     }
 
-  if (imu_scan)
+  if (args.imu_scan)
     {
       return vg_imu_scan() < 0 ? 1 : 0;
     }
 
-  if (imu_test)
+  if (args.imu_test)
     {
       return vg_imu_selftest(CONFIG_CONTEST2026_148_VELAGUARD_IMU_DEVPATH,
-                             imu_samples) < 0 ? 1 : 0;
+                             args.imu_samples) < 0 ? 1 : 0;
     }
 
-  if (fall_watch)
+  if (args.fall_watch)
     {
       return vg_imu_fall_watch(CONFIG_CONTEST2026_148_VELAGUARD_IMU_DEVPATH,
-                               fall_watch_seconds) < 0 ? 1 : 0;
+                               args.fall_watch_seconds) < 0 ? 1 : 0;
     }
+
+#ifdef CONFIG_INPUT_TOUCHSCREEN
+  if (args.touch_test)
+    {
+#  ifdef NEED_BOARDINIT
+      boardctl(BOARDIOC_INIT, 0);
+#  endif
+      return vg_touch_selftest(
+               CONFIG_CONTEST2026_148_VELAGUARD_INPUT_DEVPATH,
+               args.touch_samples) < 0 ? 1 : 0;
+    }
+#endif
 
   memset(&g_vg, 0, sizeof(g_vg));
   g_vg.state = VG_STATE_GUARDING;
   g_vg.mode = VG_MODE_ELDER;
+  g_vg.watchface = 1;
   g_vg.next_id = 1000;
   g_vg.home_last_minute = -1;
   g_vg.home_last_mday = -1;
@@ -2537,37 +3007,40 @@ int main(int argc, FAR char *argv[])
   printf("VelaGuard: started. JSON events are printed as VELAGUARD_EVENT.\n");
   fflush(stdout);
 
+  ret = task_create("vg_ble", CONFIG_CONTEST2026_148_VELAGUARD_PRIORITY,
+                    VG_BLE_TASK_STACKSIZE, vg_ble_service_task, NULL);
+  if (ret < 0)
+    {
+      printf("VelaGuard BLE: service task start failed: %d\n", errno);
+    }
+
   vg_render_home();
   vg_imu_ui_init();
   g_vg.tick_timer = lv_timer_create(vg_tick_cb, VG_TICK_PERIOD_MS, NULL);
   g_vg.imu_timer = lv_timer_create(vg_imu_timer_cb, VG_IMU_UI_PERIOD_MS,
                                    NULL);
 
-  /* Bluetooth controller bring-up may block or assert on an HCI timeout.
-   * Start it only after the first UI is built and isolate it in a separate
-   * task so display, touch and local safety functions remain available.
-   */
-
-  if (task_create("vg_ble", CONFIG_CONTEST2026_148_VELAGUARD_PRIORITY,
-                  VG_BLE_INIT_STACKSIZE, vg_ble_init_task, NULL) < 0)
+  for (warmup = 0; warmup < 3; warmup++)
     {
-      printf("VelaGuard BLE: init task start failed: %d\n", errno);
+      lv_timer_handler();
+      usleep(20000);
     }
 
-  if (has_initial_event)
+  if (args.has_initial_event)
     {
-      vg_trigger_event(initial_event);
+      vg_trigger_event(args.initial_event);
     }
 
   for (; ; )
     {
-      vg_ble_process();
+      vg_ble_process_ui();
       vg_audio_process();
 #ifdef CONFIG_CONTEST2026_148_AUDIO_FEEDBACK
       vg_audio_feedback_process();
 #endif
 
       uint32_t idle = lv_timer_handler();
+
       idle = idle ? idle : 1;
       if (idle > CONFIG_CONTEST2026_148_VELAGUARD_LOOP_SLEEP_MAX_MS)
         {

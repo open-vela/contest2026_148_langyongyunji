@@ -61,6 +61,7 @@ struct vg_fall_detector_s
   int trigger_gyro_dps;
   int posture_delta_deg;
   int still_ms;
+  uint32_t debug_log_ms;
   bool posture_changed;
 };
 
