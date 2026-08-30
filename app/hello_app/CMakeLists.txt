@@ -11,11 +11,6 @@ set(CONTEST2026_148_BOARD_DIR
 set(CONTEST2026_148_BT_DEP)
 if(CONFIG_BLUETOOTH)
   set(CONTEST2026_148_BT_DEP libbluetooth)
-elseif(CONFIG_BT)
-  # The legacy VelaGuard BLE adapter calls the ZBlue host directly.  When the
-  # Framework module is disabled, link the host library explicitly so this
-  # application uses ZBlue's native H4 transport.
-  set(CONTEST2026_148_BT_DEP zblue)
 endif()
 
 file(GLOB VELAGUARD_UI_SRCS
@@ -96,12 +91,8 @@ if(CONFIG_LVX_USE_DEMO_CONTEST2026_148_VELAGUARD)
     audio/velaguard_wav_parser.c
     sensors/velaguard_imu.c
     comm/velaguard_ble.c
-    ${NUTTX_DIR}/../apps/external/zblue/zblue/port/drivers/bluetooth/hci/h4.c
+    comm/velaguard_ble_compat.c
     ${VELAGUARD_UI_SRCS})
-
-  if(CONFIG_BT)
-    target_link_libraries(apps_velaguard PRIVATE zblue::headers)
-  endif()
 
   if(CONFIG_CONTEST2026_148_AUDIO_TEST)
     nuttx_add_application(
