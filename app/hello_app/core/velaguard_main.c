@@ -175,6 +175,9 @@ LV_FONT_DECLARE(velaguard_font_30);
 #define VG_DEVICE_WAIT_MS      5000
 #define VG_VOICE_REARM_MS       3000
 #define VG_LIGHTWEIGHT_UI       0
+#define VG_BLE_RETRY_MS         5000
+#define VG_BLE_MAX_INIT_ATTEMPTS 2
+#define VG_BLE_FAIL_BACKOFF_MS  60000
 #define VG_LOCAL_TIME_OFFSET_SECONDS (8 * 60 * 60)
 #define VG_BASE_W               240
 #define VG_BASE_H               280
@@ -355,6 +358,7 @@ static void vg_update_alarm_hold(void);
 static void vg_render_fall_hold_progress(enum vg_action_e action);
 static void vg_update_hold_progress_visuals(uint64_t now);
 static void vg_audio_process(void);
+static void vg_ble_service_poll(void);
 
 /****************************************************************************
  * Private Data
@@ -458,6 +462,44 @@ static const lv_image_dsc_t *g_touch_week_digits[7] =
   &velaguard_img_icon_touch_future_week_5,
   &velaguard_img_icon_touch_future_week_6,
 };
+
+static void vg_ble_service_poll(void)
+{
+  static int failures;
+  static uint64_t next_attempt_ms;
+  uint64_t now = vg_uptime_ms();
+  int ret;
+
+  if (!vg_ble_is_initialized())
+    {
+      if (now < next_attempt_ms)
+        {
+          return;
+        }
+
+      printf("VelaGuard BLE: service init attempt\n");
+      ret = vg_ble_init();
+      if (ret < 0)
+        {
+          failures++;
+          printf("VelaGuard BLE: service init failed: %d attempt=%d/%d\n",
+                 ret, failures, VG_BLE_MAX_INIT_ATTEMPTS);
+          if (ret == -ENODEV || failures >= VG_BLE_MAX_INIT_ATTEMPTS)
+            {
+              next_attempt_ms = now + VG_BLE_FAIL_BACKOFF_MS;
+              printf("VelaGuard BLE: init backoff after persistent failure\n");
+              return;
+            }
+
+          next_attempt_ms = now + VG_BLE_RETRY_MS;
+          return;
+        }
+
+      failures = 0;
+    }
+
+  vg_ble_process();
+}
 
 /****************************************************************************
  * Private Functions
@@ -2553,6 +2595,9 @@ static void vg_audio_headless_loop(void)
   printf("VelaGuard: UI unavailable; audio diagnostics remain active.\n");
   for (; ; )
     {
+      vg_ble_service_poll();
+      vg_ble_process_time();
+
       if (g_vg.audio_ready &&
           vg_audio_capture_level(&g_vg.audio_level, &g_vg.audio_sequence,
                                  NULL))
@@ -2704,21 +2749,17 @@ int main(int argc, FAR char *argv[])
       usleep(20000);
     }
 
-  /* Keep the official LVGL bring-up order intact.  Start the independent BLE
-   * worker only after the display has completed its first refresh. */
-  if (vg_ble_init() < 0)
-    {
-      printf("VelaGuard BLE: worker start failed\n");
-    }
-
   for (; ; )
     {
+      /* BLE service polling must precede audio capture.  HCI bring-up runs
+       * asynchronously; entering the audio mq wait first can collide with
+       * the controller response path on SF32LB52. */
+      vg_ble_service_poll();
+      vg_ble_process_time();
       vg_audio_process();
 #ifdef CONFIG_CONTEST2026_148_AUDIO_FEEDBACK
       vg_audio_feedback_process();
 #endif
-      vg_ble_process();
-      vg_ble_process_time();
 
       uint32_t idle = lv_timer_handler();
 
