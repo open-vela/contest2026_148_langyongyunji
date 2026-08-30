@@ -88,7 +88,10 @@ CONFIG_BT_GATT_CLIENT=y
 # LE Set Random Address while restarting advertising after disconnect.
 # CONFIG_BT_PRIVACY is not set
 CONFIG_BT_HOST_CRYPTO=y
-CONFIG_BT_HOST_CRYPTO_PRNG=y
+# Use the SF32LB52 controller HCI random command instead of initializing the
+# PSA DRBG from the Bluetooth init work queue.  The latter opens /dev/urandom
+# during early bring-up and can fault while the VelaGuard process is starting.
+# CONFIG_BT_HOST_CRYPTO_PRNG is not set
 CONFIG_CRYPTO_MBEDTLS=y
 CONFIG_MBEDTLS_PSA_CRYPTO_C=y
 # VelaGuard's phone link is a plain GATT peripheral protocol.  Pairing is not
