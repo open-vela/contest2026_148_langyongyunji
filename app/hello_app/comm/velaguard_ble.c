@@ -9,6 +9,7 @@
 #include <errno.h>
 #include <nuttx/irq.h>
 #include <nuttx/spinlock.h>
+#include <nuttx/wqueue.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -86,11 +87,25 @@ static uint64_t g_vg_last_time_sync_ms;
 static uint64_t g_vg_pending_time_sync_ms;
 static uint64_t g_vg_last_test_notify_ms;
 static uint64_t g_vg_last_status_notify_ms;
+static struct work_s g_vg_status_work;
 static uint32_t g_vg_test_counter;
 static uint8_t g_vg_last_test_value;
 static uint16_t g_vg_event_ccc_value;
 static uint16_t g_vg_status_ccc_value;
 static uint16_t g_vg_test_ccc_value;
+
+static void vg_ble_status_worker(void *arg);
+
+static void vg_ble_schedule_status_work(void)
+{
+  if (g_vg_connected && g_vg_status_notify_enabled &&
+      g_vg_peer_addr_valid && g_vg_service_registered &&
+      work_available(&g_vg_status_work))
+    {
+      (void)work_queue(LPWORK, &g_vg_status_work, vg_ble_status_worker,
+                       NULL, MSEC2TICK(VG_BLE_HEARTBEAT_MS));
+    }
+}
 
 static uint64_t vg_ble_get_le64(const uint8_t *data)
 {
@@ -325,6 +340,7 @@ static uint16_t vg_ble_attr_write(gatts_handle_t srv_handle,
             printf("VelaGuard BLE: status CCC value=0x%04x notifications=%s\n",
                    ccc_value,
                    g_vg_status_notify_enabled ? "enabled" : "disabled");
+            vg_ble_schedule_status_work();
           }
         else
           {
@@ -560,6 +576,30 @@ static void vg_ble_adv_stopped(bt_advertiser_t *adv, uint8_t adv_id)
   printf("VelaGuard BLE: advertising stopped id=%u\n", adv_id);
 }
 
+static void vg_ble_status_worker(void *arg)
+{
+  uint8_t status_value;
+  bt_status_t status;
+
+  (void)arg;
+  if (!g_vg_connected || !g_vg_status_notify_enabled ||
+      !g_vg_peer_addr_valid || !g_vg_service_registered)
+    {
+      return;
+    }
+
+  status_value = g_vg_fall_status_active ? 1 : 0;
+  printf("VelaGuard BLE: STATUS heartbeat attempt value=%u\n", status_value);
+  status = bt_gatts_notify(g_vg_gatts, &g_vg_peer_addr,
+                           VG_BLE_HANDLE_STATUS, &status_value,
+                           sizeof(status_value));
+  g_vg_last_status_notify_ms = vg_ble_monotonic_ms();
+  printf("VelaGuard BLE: STATUS heartbeat value=%u result=%d status=%d\n",
+         status_value, vg_ble_status_to_errno(status), status);
+
+  vg_ble_schedule_status_work();
+}
+
 static advertiser_callback_t g_vg_adv_callbacks =
 {
   .size = sizeof(g_vg_adv_callbacks),
@@ -792,29 +832,6 @@ void vg_ble_process(void)
           irqstate = enter_critical_section();
           g_vg_call_pending = false;
           leave_critical_section(irqstate);
-        }
-    }
-
-  if (g_vg_connected && g_vg_status_notify_enabled &&
-      g_vg_peer_addr_valid && g_vg_service_registered)
-    {
-      uint64_t now_ms = vg_ble_monotonic_ms();
-
-      if (g_vg_last_status_notify_ms == 0 ||
-          now_ms - g_vg_last_status_notify_ms >= VG_BLE_HEARTBEAT_MS)
-        {
-          uint8_t status_value = g_vg_fall_status_active ? 1 : 0;
-          bt_status_t status;
-
-          printf("VelaGuard BLE: STATUS heartbeat attempt value=%u\n",
-                 status_value);
-          status = bt_gatts_notify(g_vg_gatts, &g_vg_peer_addr,
-                                   VG_BLE_HANDLE_STATUS, &status_value,
-                                   sizeof(status_value));
-          ret = vg_ble_status_to_errno(status);
-          g_vg_last_status_notify_ms = now_ms;
-          printf("VelaGuard BLE: STATUS heartbeat value=%u result=%d status=%d\n",
-                 status_value, ret, status);
         }
     }
 
