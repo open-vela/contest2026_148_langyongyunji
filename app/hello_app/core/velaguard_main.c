@@ -178,6 +178,7 @@ LV_FONT_DECLARE(velaguard_font_30);
 #define VG_BLE_RETRY_MS         5000
 #define VG_BLE_MAX_INIT_ATTEMPTS 2
 #define VG_BLE_FAIL_BACKOFF_MS  60000
+#define VG_AUDIO_STARTUP_WAIT_MS 15000
 #define VG_LOCAL_TIME_OFFSET_SECONDS (8 * 60 * 60)
 #define VG_BASE_W               240
 #define VG_BASE_H               280
@@ -288,6 +289,8 @@ struct vg_app_s
   enum vg_action_e hold_action;
   int hold_last_value;
   bool audio_ready;
+  bool audio_start_attempted;
+  uint64_t audio_start_deadline_ms;
   uint32_t next_id;
   bool has_fall_result;
   bool imu_ready;
@@ -2654,19 +2657,12 @@ int main(int argc, FAR char *argv[])
   boardctl(BOARDIOC_INIT, 0);
 #endif
 
-  /* Capture must remain available even when display or Bluetooth bring-up
-   * is delayed.  In particular, the Huangshan Pi initializes its LCD from
-   * an asynchronous board task.
+  /* Bluetooth Framework owns several IPC/file descriptors during bring-up.
+   * Defer creation of the audio message queue until BLE is ready so the two
+   * asynchronous subsystems cannot race while the process fd table settles.
    */
 
-  if (vg_audio_capture_start() == 0)
-    {
-      g_vg.audio_ready = true;
-    }
-  else
-    {
-      printf("VelaGuard audio: microphone capture unavailable\n");
-    }
+  g_vg.audio_start_deadline_ms = vg_uptime_ms() + VG_AUDIO_STARTUP_WAIT_MS;
 
 #ifdef CONFIG_LV_USE_NUTTX_LCD
   vg_wait_for_device("/dev/lcd0", VG_DEVICE_WAIT_MS);
@@ -2685,6 +2681,14 @@ int main(int argc, FAR char *argv[])
 
 #ifdef CONFIG_CONTEST2026_148_VELAGUARD_HEADLESS
   printf("VelaGuard: headless BLE isolation mode\n");
+  if (vg_audio_capture_start() == 0)
+    {
+      g_vg.audio_ready = true;
+    }
+  else
+    {
+      printf("VelaGuard audio: microphone capture unavailable\n");
+    }
   for (;;)
     {
       vg_audio_process();
@@ -2756,6 +2760,23 @@ int main(int argc, FAR char *argv[])
        * the controller response path on SF32LB52. */
       vg_ble_service_poll();
       vg_ble_process_time();
+
+      if (!g_vg.audio_start_attempted &&
+          (vg_ble_is_ready() ||
+           vg_uptime_ms() >= g_vg.audio_start_deadline_ms))
+        {
+          g_vg.audio_start_attempted = true;
+          if (vg_audio_capture_start() == 0)
+            {
+              g_vg.audio_ready = true;
+              printf("VelaGuard audio: capture started after BLE bring-up\n");
+            }
+          else
+            {
+              printf("VelaGuard audio: microphone capture unavailable\n");
+            }
+        }
+
       vg_audio_process();
 #ifdef CONFIG_CONTEST2026_148_AUDIO_FEEDBACK
       vg_audio_feedback_process();
