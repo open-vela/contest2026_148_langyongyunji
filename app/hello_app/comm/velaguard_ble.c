@@ -806,6 +806,8 @@ void vg_ble_process(void)
           uint8_t status_value = g_vg_fall_status_active ? 1 : 0;
           bt_status_t status;
 
+          printf("VelaGuard BLE: STATUS heartbeat attempt value=%u\n",
+                 status_value);
           status = bt_gatts_notify(g_vg_gatts, &g_vg_peer_addr,
                                    VG_BLE_HANDLE_STATUS, &status_value,
                                    sizeof(status_value));
