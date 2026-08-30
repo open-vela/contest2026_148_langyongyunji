@@ -406,7 +406,10 @@ static ble_adv_params_t g_vg_adv_params =
 {
   .adv_type = BT_LE_LEGACY_ADV_IND,
   .peer_addr_type = BT_LE_ADDR_TYPE_UNKNOWN,
-  .own_addr_type = BT_LE_ADDR_TYPE_UNKNOWN,
+  /* SF32LB52 exposes a controller public identity.  Do not leave this as
+   * UNKNOWN: the Framework's advertising path may attempt random-address
+   * allocation before the adapter address cache is populated. */
+  .own_addr_type = BT_LE_ADDR_TYPE_PUBLIC,
   .tx_power = 0,
   .interval = 0x30,
   .duration = 0,
