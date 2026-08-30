@@ -1,0 +1,23 @@
+diff --git a/boards/sf32lb52/drivers/input/ft6146.c b/boards/sf32lb52/drivers/input/ft6146.c
+--- a/boards/sf32lb52/drivers/input/ft6146.c
++++ b/boards/sf32lb52/drivers/input/ft6146.c
+@@ -151,7 +151,18 @@ static void ft6146_irq_handler(void *arg)
+   struct ft6146_touch_lowerhalf_s *ft6146 =
+     (struct ft6146_touch_lowerhalf_s *)arg;
+   int ret;
+ 
++  /* Touch controllers can assert the IRQ repeatedly while the previous
++   * I2C read is still queued.  A work item may only be queued once; drop
++   * duplicate edges until the worker has consumed the pending item. */
++  if (!work_available(&ft6146->work))
++    {
++      return;
++    }
++
+   ret = work_queue(HPWORK, &ft6146->work, ft6146_data_worker, ft6146, 0);
+-  DEBUGASSERT(ret == OK);
++  if (ret < 0 && ret != -EBUSY)
++    {
++      ierr("ft6146: queue touch work failed: %d\n", ret);
++    }
+ }
