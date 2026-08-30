@@ -1,0 +1,60 @@
+--- a/service/profiles/gatt/gatts_service.c
++++ b/service/profiles/gatt/gatts_service.c
+@@ -109,6 +109,10 @@ static gatts_manager_t g_gatts_manager = {
+     .pend_ops = NULL,
+ };
+ 
++/* Service IDs are assigned in 0x100-sized groups.  Keep a direct index so
++ * incoming ATT operations do not need to walk the mutable service list. */
++static gatts_service_t* g_gatts_service_by_group[UINT8_MAX + 1];
++
+ /****************************************************************************
+  * Private Functions
+  ****************************************************************************/
+@@ -147,6 +151,12 @@ static bool service_id_cmp(void* service, void* id)
+ static gatts_service_t* find_gatts_service_by_id(uint16_t srv_id)
+ {
+     srv_id = GATT_ELEMENT_GROUP_ID(srv_id);
++    gatts_service_t* service = g_gatts_service_by_group[srv_id >> 8];
++
++    if (service && service->srv_id == srv_id) {
++        return service;
++    }
++
+     return bt_list_find(g_gatts_manager.services, service_id_cmp, &srv_id);
+ }
+ 
+@@ -369,6 +379,7 @@ static bt_status_t if_gatts_init(void)
+     pthread_mutexattr_t attr;
+ 
+     memset(&g_gatts_manager, 0, sizeof(g_gatts_manager));
++    memset(g_gatts_service_by_group, 0, sizeof(g_gatts_service_by_group));
+     g_gatts_manager.started = false;
+ 
+     pthread_mutexattr_init(&attr);
+@@ -440,6 +451,7 @@ static bt_status_t if_gatts_shutdown(profile_on_shutdown_t cb)
+     manager->services = NULL;
+     bt_list_free(manager->pend_ops);
+     manager->pend_ops = NULL;
++    memset(g_gatts_service_by_group, 0, sizeof(g_gatts_service_by_group));
+     manager->started = false;
+     pthread_mutex_unlock(&manager->device_lock);
+     bt_sal_gatt_server_disable();
+@@ -513,6 +525,7 @@ static bt_status_t if_gatts_register_service(void* remote, void** phandle, gatts
+     }
+ 
+     bt_list_add_tail(g_gatts_manager.services, service);
++    g_gatts_service_by_group[service->srv_id >> 8] = service;
+     pthread_mutex_unlock(&g_gatts_manager.device_lock);
+ 
+     pthread_mutexattr_init(&attr);
+@@ -543,6 +556,9 @@ static bt_status_t if_gatts_unregister_service(void* srv_handle)
+ 
+     void** user_phandle = service->user_phandle;
+     pthread_mutex_lock(&g_gatts_manager.device_lock);
++    if (g_gatts_service_by_group[service->srv_id >> 8] == service) {
++        g_gatts_service_by_group[service->srv_id >> 8] = NULL;
++    }
+     bt_list_remove(g_gatts_manager.services, service);
+     pthread_mutex_unlock(&g_gatts_manager.device_lock);
+     *user_phandle = NULL;

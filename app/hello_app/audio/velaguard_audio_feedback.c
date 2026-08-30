@@ -154,6 +154,11 @@ int vg_audio_feedback_trigger(enum vg_feedback_type_e type)
   return 0;
 }
 
+bool vg_audio_feedback_active(void)
+{
+  return g_state != VG_FBSTATE_IDLE;
+}
+
 void vg_audio_feedback_process(void)
 {
   struct audio_msg_s msg;
@@ -281,6 +286,11 @@ void vg_audio_feedback_process(void)
               memcpy(g_bufs[i]->samp, g_pcm_buf + offset, to_copy);
               g_bufs[i]->nbytes = to_copy;
               offset += to_copy;
+              g_bufs[i]->flags &= ~AUDIO_APB_FINAL;
+              if (offset == g_pcm_total)
+                {
+                  g_bufs[i]->flags |= AUDIO_APB_FINAL;
+                }
 
               memset(&desc, 0, sizeof(desc));
               desc.u.buffer = g_bufs[i];
@@ -339,17 +349,15 @@ void vg_audio_feedback_process(void)
               memcpy(apb->samp, g_pcm_buf + g_pcm_done, to_copy);
               apb->nbytes = to_copy;
               g_pcm_done += to_copy;
+              apb->flags &= ~AUDIO_APB_FINAL;
+              if (g_pcm_done == g_pcm_total)
+                {
+                  apb->flags |= AUDIO_APB_FINAL;
+                }
 
               memset(&desc, 0, sizeof(desc));
               desc.u.buffer = apb;
               ioctl(g_dev_fd, AUDIOIOC_ENQUEUEBUFFER, &desc);
-            }
-
-          /* Check completion. */
-
-          if (g_pcm_done >= g_pcm_total)
-            {
-              g_state = VG_FBSTATE_CLEANUP;
             }
         }
       else if (msg.msg_id == AUDIO_MSG_COMPLETE)

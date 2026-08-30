@@ -1,0 +1,5 @@
+diff --git a/chips/sf32lb52/sf32lb52_bt_adapter.c b/chips/sf32lb52/sf32lb52_bt_adapter.c
+--- a/chips/sf32lb52/sf32lb52_bt_adapter.c
++++ b/chips/sf32lb52/sf32lb52_bt_adapter.c
+@@ -1014,0 +1015 @@ int sf32lb52_host_send_packet(const uint8_t *data, uint16_t len)
++          usleep(1000);

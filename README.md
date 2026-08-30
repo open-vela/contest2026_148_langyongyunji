@@ -37,12 +37,55 @@ logs/               AI Coding 日志
   zblue 栈生命周期。
 - `velaguard_ble.c` 是 VelaGuard Service 的 framework adapter，负责注册自定义
   Service/Characteristic、广播、连接状态、CCCD、Notify、校时和事件补发。
-- BLE 业务由独立 `vg_ble` task 初始化并轮询处理；Bluetooth framework 自己的
-  libuv service loop 仍由官方框架管理，App task 不直接驱动框架内部 loop。
+- VelaGuard 主任务在启动时只执行一次 `vg_ble_init()`，随后轮询业务状态；Bluetooth
+  framework 自己的 libuv service loop 仍由官方框架管理，App task 不直接驱动框架内部
+  loop，也不重复创建 Framework instance。
 - 蓝牙 UI 开关含义是“蓝牙功能启用/强制关闭”，不是“手机已连接/未连接”。
+- 表盘页横向滑动进入蓝牙信息页，蓝牙信息页横向滑动返回表盘；表盘编辑要求静止长按 1.2 秒，
+  按住期间出现横向或纵向位移会按滑动处理，不会误进入编辑页。
 - App 断开后设备会清连接态和 CCCD 状态；如果蓝牙功能仍启用，会重新请求广播。
 - 如果紧急事件发生时 App 未连接或未订阅 event Notify，设备会保留一条 pending
   `CALL_REQUEST`，待下次连接并打开 event CCCD 后补发。
+- 当前验证配置启用 SOS WAV 扬声器提示，关闭 ADC 麦克风采集和语音求助触发；两者可独立
+  配置。恢复麦克风时，应用会在播放 WAV 前暂停采集、播放完成后再恢复，不能让采集与播放
+  各自持有消息队列和 DMA 后并发运行。
+
+## BLE 开发规则与当前排查结论
+
+本项目后续 BLE 修改必须遵循“官方优先、队伍目录管理”的原则：
+
+- 上层优先使用 openvela `frameworks/connectivity/bluetooth` Framework 的公开 API，
+  不在业务层直接调用 zblue 私有生命周期、`bt_enable()`、H4/UART 收发或另起一套
+  Bluetooth 主循环。
+- 底层优先使用思澈 SF32LB52 BSP、官方 H4 UART、`bt_nettev` 和环形缓冲实现。
+  只有确认官方链路存在问题时，才通过队伍目录的 patch 修复，不能直接修改
+  `vendor/sifli`、`frameworks` 或 NuttX 源码后交付。
+- `contest2026_148_langyongyunji/board/contest_board/configs/nsh/defconfig` 是本项目
+  的配置来源。编译前执行 `scripts/apply_patches.sh`，确保 vendor/zblue patch 已应用。
+- `0007-fix-sf32lb52-h4-command-response-flow.patch` 和
+  `0008-fix-sf32lb52-h4-packet-serialization.patch` 是已验证过的 H4 修复，不能随意
+  删除或用业务代码替代。其余底层修复也必须有对应 patch 和可复现的日志证据。
+- `framework/0002-fix-gatts-single-service-lookup.patch` 避免单一 GATT Server service
+  的 ATT 读写请求回退遍历异常服务链表；它不改变 UUID、属性表或手机协议。
+- `framework/0003-fix-peripheral-only-adapter-state-and-local-address.patch` 让 Framework
+  在 BLE-only 状态下接受 adapter 请求，并把控制器 LE identity address 返回给业务层的
+  蓝牙信息页。
+- BLE 只启用 Peripheral/GATT Server 所需能力；BR/EDR、GATT Client、扫描和测试命令
+  不应为了“保险”全部打开。配置变更必须记录在本目录并从队伍目录重新构建。
+- BLE 只允许一次 Framework instance、一次 adapter callback、一次 Service 注册和一次
+  初始化。断线只清理连接/CCCD 状态并恢复广播，不重复创建对象或注册 Service。
+- LVGL、音频和 BLE 的初始化要遵循官方设备就绪顺序；不能用 BLE 业务线程反复补偿初始化，
+  也不能在回调中直接执行耗时 UI、文件或系统时间操作。
+
+当前实测链路已恢复：设备可以广播，App 可以连接并完成 GATT 服务发现，订阅后的状态心跳
+持续发送。H4 TX ring 曾出现元数据异常并在 `memcpy` 处触发 HardFault；当前
+`0015-recover-invalid-sf32lb52-h4-tx-ring.patch` 对 ring 边界、D-cache 和一次性恢复做了
+保护，异常仍会保留 warning/error 日志。`0010-chore-sf32lb52-h4-reduce-diagnostic-log-noise.patch`
+关闭 H4 逐包、ACL 原始字节和 TX 阶段日志，避免运行期刷屏；它不关闭硬件错误、发送超时或
+TX ring 异常日志。`0012-fix-sf32lb52-reserve-hcpu-mailbox-from-heap.patch` 将 HCPU 尾部
+1 KiB mailbox 从 NuttX 堆中排除，避免 BLE IPC 覆盖堆元数据。若今后服务发现再次异常，临时打开两个 H4 源文件中的 `SF32LB52_BT_TRACE` 和
+`SF32LB52_BT_ACL_STAGE_TRACE` 后，按 H4 RX -> Framework/ATT -> H4 TX -> App 回调的顺序
+定位，不先修改 UUID、MTU 或 App 协议。
 
 详细 BLE 协议见 [app/hello_app/comm/README.md](app/hello_app/comm/README.md)。
 

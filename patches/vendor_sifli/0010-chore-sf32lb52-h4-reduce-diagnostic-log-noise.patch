@@ -1,0 +1,45 @@
+diff --git a/chips/sf32lb52/sf32lb52_bt_adapter.c b/chips/sf32lb52/sf32lb52_bt_adapter.c
+--- a/chips/sf32lb52/sf32lb52_bt_adapter.c
++++ b/chips/sf32lb52/sf32lb52_bt_adapter.c
+@@ -52 +52,2 @@
+-#define SF32LB52_BT_TRACE          1
++#define SF32LB52_BT_TRACE          0
++#define SF32LB52_BT_ACL_STAGE_TRACE 0
+@@ -347,4 +348,10 @@ static void sf32lb52_bt_log_packet(const char *direction,
+ {
++#if SF32LB52_BT_TRACE
+   uint16_t opcode = 0;
+   uint8_t event = 0;
++#else
++  (void)direction;
++  (void)rd_ptr;
++  (void)wr_ptr;
++#endif
+ 
+@@ -355,1 +363,2 @@ static void sf32lb52_bt_log_packet(const char *direction,
++#if SF32LB52_BT_TRACE
+   if (data[0] == SF32LB52_BT_H4_CMD && len >= 3)
+@@ -390,1 +399,3 @@ static void sf32lb52_bt_log_packet(const char *direction,
+-  else if (data[0] == 0x04 && len >= 4 && data[1] == 0x10)
++#endif
++
++  if (data[0] == 0x04 && len >= 4 && data[1] == 0x10)
+@@ -960,1 +971,1 @@ int sf32lb52_host_send_packet(const uint8_t *data, uint16_t len)
+-  if (data[0] == 0x02)
++  if (SF32LB52_BT_ACL_STAGE_TRACE && data[0] == 0x02)
+@@ -975,1 +986,1 @@ int sf32lb52_host_send_packet(const uint8_t *data, uint16_t len)
+-  if (data[0] == 0x02)
++  if (SF32LB52_BT_ACL_STAGE_TRACE && data[0] == 0x02)
+@@ -1002,1 +1013,1 @@ int sf32lb52_host_send_packet(const uint8_t *data, uint16_t len)
+-  if (data[0] == 0x02)
++  if (SF32LB52_BT_ACL_STAGE_TRACE && data[0] == 0x02)
+@@ -1037,1 +1048,1 @@ int sf32lb52_host_send_packet(const uint8_t *data, uint16_t len)
+-  if (data[0] == 0x02)
++  if (SF32LB52_BT_ACL_STAGE_TRACE && data[0] == 0x02)
+@@ -1058,1 +1069,2 @@ int sf32lb52_host_send_packet(const uint8_t *data, uint16_t len)
+-      if (data[0] == 0x02 && !acl_write_logged)
++      if (SF32LB52_BT_ACL_STAGE_TRACE && data[0] == 0x02 &&
++          !acl_write_logged)
+@@ -1103,1 +1115,1 @@ int sf32lb52_host_send_packet(const uint8_t *data, uint16_t len)
+-  if (data[0] == 0x02)
++  if (SF32LB52_BT_ACL_STAGE_TRACE && data[0] == 0x02)

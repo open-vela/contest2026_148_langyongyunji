@@ -175,10 +175,6 @@ LV_FONT_DECLARE(velaguard_font_30);
 #define VG_DEVICE_WAIT_MS      5000
 #define VG_VOICE_REARM_MS       3000
 #define VG_LIGHTWEIGHT_UI       0
-#define VG_BLE_RETRY_MS         5000
-#define VG_BLE_MAX_INIT_ATTEMPTS 2
-#define VG_BLE_FAIL_BACKOFF_MS  60000
-#define VG_AUDIO_STARTUP_WAIT_MS 15000
 #define VG_LOCAL_TIME_OFFSET_SECONDS (8 * 60 * 60)
 #define VG_BASE_W               240
 #define VG_BASE_H               280
@@ -188,6 +184,8 @@ LV_FONT_DECLARE(velaguard_font_30);
 #define VG_Y(v)                 ((int32_t)(((v) * VG_SCREEN_H + VG_BASE_H / 2) / VG_BASE_H))
 #define VG_SOS_LONG_MS          1200
 #define VG_BUTTON_RELEASE_DEBOUNCE_MS 100
+#define VG_HOME_EDIT_LONG_MS    1200
+#define VG_HOME_GESTURE_SLOP_PX VG_X(12)
 #define VG_HOLD_CONFIRM_MS      3000
 #define VG_ALARM_FRAME_COUNT    1
 
@@ -238,6 +236,21 @@ enum vg_page_e
   VG_PAGE_WATCHFACE_PICKER,
 };
 
+/* A page rebuild deletes the current screen children.  It must therefore not
+ * run from an LVGL event or timer callback which can still reference them. */
+enum vg_render_e
+{
+  VG_RENDER_NONE = 0,
+  VG_RENDER_HOME,
+  VG_RENDER_PREALERT,
+  VG_RENDER_ALERT,
+  VG_RENDER_HISTORY,
+  VG_RENDER_SETTINGS,
+  VG_RENDER_BLUETOOTH,
+  VG_RENDER_WATCHFACE,
+  VG_RENDER_CURRENT,
+};
+
 enum vg_mode_e
 {
   VG_MODE_ELDER = 0,
@@ -281,25 +294,33 @@ struct vg_app_s
   uint32_t audio_report_tick;
   uint64_t voice_last_trigger_ms;
   uint64_t button_down_ms;
+  uint64_t button_arm_release_ms;
   uint64_t button_release_candidate_ms;
   uint64_t countdown_start_ms;
   uint64_t ble_toggle_last_ms;
+  uint64_t bluetooth_last_refresh_ms;
+  uint64_t home_press_start_ms;
+  lv_point_t home_press_point;
   uint64_t hold_cancel_start_ms;
   uint64_t hold_confirm_start_ms;
   enum vg_action_e hold_action;
   int hold_last_value;
   bool audio_ready;
   bool audio_start_attempted;
-  uint64_t audio_start_deadline_ms;
+  bool audio_resume_after_feedback;
   uint32_t next_id;
   bool has_fall_result;
   bool imu_ready;
+  bool button_armed;
   bool button_long_handled;
   bool sos_prompt_visible;
   bool hold_cancel_active;
   bool hold_confirm_active;
   bool navigating;
   bool gesture_consumed;
+  bool home_press_moved;
+  bool home_edit_handled;
+  enum vg_render_e pending_render;
   enum vg_page_e current_page;
   enum vg_page_e target_page;
   uint8_t watchface;
@@ -323,12 +344,16 @@ struct vg_app_s
   lv_obj_t *home_week_img;
   lv_obj_t *home_date_label;
   lv_obj_t *home_week_label;
+  lv_obj_t *home_root;
+  lv_obj_t *bluetooth_root;
+  lv_obj_t *bluetooth_addr_label;
   lv_obj_t *detail_label;
   lv_obj_t *imu_status_label;
   lv_obj_t *imu_value_label;
   lv_obj_t *imu_detail_label;
   lv_timer_t *tick_timer;
   lv_timer_t *imu_timer;
+  lv_timer_t *render_timer;
 #ifdef CONFIG_INPUT_BUTTONS
   int button_fd;
   btn_buttonset_t last_buttons;
@@ -345,10 +370,16 @@ static void vg_render_alert(void);
 static void vg_render_history(void);
 static void vg_render_settings(void);
 static void vg_render_bluetooth(void);
+static void vg_create_bluetooth_page(lv_obj_t *scr);
 static void __attribute__((unused)) vg_render_watchface_picker(void);
 static void vg_render_current(void);
+static void vg_navigation_gesture_cb(lv_event_t *event);
+static const char *vg_page_name(enum vg_page_e page);
 static void vg_nav_request(enum vg_page_e target, lv_dir_t dir,
                            const char *source);
+static void vg_schedule_render(enum vg_render_e render);
+static void vg_process_pending_render(void);
+static void vg_render_timer_cb(lv_timer_t *timer);
 static uint64_t vg_uptime_ms(void);
 static void vg_set_font(lv_obj_t *obj);
 static void vg_trigger_fall_result(const struct vg_fall_result_s *result);
@@ -357,10 +388,15 @@ static void vg_start_prealert(enum vg_event_type_e type, int countdown,
 static void vg_update_imu_labels(void);
 static void vg_update_watchface_time(void);
 static void vg_update_countdown_visuals(void);
+static void vg_update_manual_sos_progress(uint64_t now);
+static void vg_update_bluetooth_page(bool force);
 static void vg_update_alarm_hold(void);
 static void vg_render_fall_hold_progress(enum vg_action_e action);
 static void vg_update_hold_progress_visuals(uint64_t now);
 static void vg_audio_process(void);
+static void vg_audio_start_once(void);
+static void vg_audio_feedback_start(enum vg_feedback_type_e type);
+static void vg_audio_resume_after_feedback(void);
 static void vg_ble_service_poll(void);
 
 /****************************************************************************
@@ -468,39 +504,8 @@ static const lv_image_dsc_t *g_touch_week_digits[7] =
 
 static void vg_ble_service_poll(void)
 {
-  static int failures;
-  static uint64_t next_attempt_ms;
-  uint64_t now = vg_uptime_ms();
-  int ret;
-
-  if (!vg_ble_is_initialized())
-    {
-      if (now < next_attempt_ms)
-        {
-          return;
-        }
-
-      printf("VelaGuard BLE: service init attempt\n");
-      ret = vg_ble_init();
-      if (ret < 0)
-        {
-          failures++;
-          printf("VelaGuard BLE: service init failed: %d attempt=%d/%d\n",
-                 ret, failures, VG_BLE_MAX_INIT_ATTEMPTS);
-          if (ret == -ENODEV || failures >= VG_BLE_MAX_INIT_ATTEMPTS)
-            {
-              next_attempt_ms = now + VG_BLE_FAIL_BACKOFF_MS;
-              printf("VelaGuard BLE: init backoff after persistent failure\n");
-              return;
-            }
-
-          next_attempt_ms = now + VG_BLE_RETRY_MS;
-          return;
-        }
-
-      failures = 0;
-    }
-
+  /* Framework setup is performed once during application startup.  This loop
+   * only advances asynchronous GATT and advertising state. */
   vg_ble_process();
 }
 
@@ -731,15 +736,15 @@ static void vg_confirm_alert(void)
 #ifdef CONFIG_CONTEST2026_148_AUDIO_FEEDBACK
     if (ble_ret == 0 || ble_ret == -ENOTCONN)
       {
-        vg_audio_feedback_trigger(VG_FEEDBACK_SUCCESS);
+        vg_audio_feedback_start(VG_FEEDBACK_SUCCESS);
       }
     else
       {
-        vg_audio_feedback_trigger(VG_FEEDBACK_FAILURE);
+        vg_audio_feedback_start(VG_FEEDBACK_FAILURE);
       }
 #endif
   }
-  vg_render_alert();
+  vg_schedule_render(VG_RENDER_ALERT);
 }
 
 static void vg_trigger_event(enum vg_event_type_e type)
@@ -770,15 +775,15 @@ static void vg_trigger_event(enum vg_event_type_e type)
 #ifdef CONFIG_CONTEST2026_148_AUDIO_FEEDBACK
         if (ble_ret == 0 || ble_ret == -ENOTCONN)
           {
-            vg_audio_feedback_trigger(VG_FEEDBACK_SUCCESS);
+            vg_audio_feedback_start(VG_FEEDBACK_SUCCESS);
           }
         else
           {
-            vg_audio_feedback_trigger(VG_FEEDBACK_FAILURE);
+            vg_audio_feedback_start(VG_FEEDBACK_FAILURE);
           }
 #endif
       }
-      vg_render_alert();
+      vg_schedule_render(VG_RENDER_ALERT);
       return;
     }
 
@@ -814,7 +819,7 @@ static void vg_start_prealert(enum vg_event_type_e type, int countdown,
   g_vg.hold_last_value = -1;
   g_vg.alarm_frame = 0;
   vg_emit_json(&g_vg.active);
-  vg_render_prealert();
+  vg_schedule_render(VG_RENDER_PREALERT);
 }
 
 static void vg_popup_close_cb(lv_event_t *event)
@@ -880,7 +885,7 @@ static void vg_cancel_event(void)
 {
   if (g_vg.state != VG_STATE_PREALERT)
     {
-      vg_render_home();
+      vg_schedule_render(VG_RENDER_HOME);
       return;
     }
 
@@ -903,7 +908,7 @@ static void vg_cancel_event(void)
   g_vg.hold_confirm_active = false;
   g_vg.hold_action = 0;
   g_vg.hold_last_value = -1;
-  vg_render_home();
+  vg_schedule_render(VG_RENDER_HOME);
 }
 
 static void vg_resolve_event(void)
@@ -928,7 +933,7 @@ static void vg_resolve_event(void)
   g_vg.hold_confirm_active = false;
   g_vg.hold_action = 0;
   g_vg.hold_last_value = -1;
-  vg_render_home();
+  vg_schedule_render(VG_RENDER_HOME);
 }
 
 static lv_obj_t *vg_screen_reset(void)
@@ -962,12 +967,94 @@ static lv_obj_t *vg_screen_reset(void)
   g_vg.home_week_digit = -1;
   g_vg.home_date_label = NULL;
   g_vg.home_week_label = NULL;
+  g_vg.home_root = NULL;
+  g_vg.bluetooth_root = NULL;
+  g_vg.bluetooth_addr_label = NULL;
+  g_vg.bluetooth_last_refresh_ms = 0;
   g_vg.detail_label = NULL;
   g_vg.imu_status_label = NULL;
   g_vg.imu_value_label = NULL;
   g_vg.imu_detail_label = NULL;
 
   return scr;
+}
+
+static void vg_schedule_render(enum vg_render_e render)
+{
+  /* Multiple state changes in one LVGL pass only need the final page. */
+  g_vg.pending_render = render;
+
+  /* Keep page creation and deletion in LVGL's timer context. */
+  if (g_vg.render_timer != NULL)
+    {
+      /* lv_timer_ready() does not run a paused timer.  Rendering is paused
+       * while idle, so resume it before scheduling this LVGL pass. */
+      lv_timer_resume(g_vg.render_timer);
+      lv_timer_ready(g_vg.render_timer);
+    }
+}
+
+static void vg_process_pending_render(void)
+{
+  enum vg_render_e render = g_vg.pending_render;
+
+  if (render == VG_RENDER_NONE)
+    {
+      return;
+    }
+
+  g_vg.pending_render = VG_RENDER_NONE;
+  switch (render)
+    {
+      case VG_RENDER_HOME:
+        vg_render_home();
+        break;
+
+      case VG_RENDER_PREALERT:
+        vg_render_prealert();
+        break;
+
+      case VG_RENDER_ALERT:
+        vg_render_alert();
+        break;
+
+      case VG_RENDER_HISTORY:
+        vg_render_history();
+        break;
+
+      case VG_RENDER_SETTINGS:
+        vg_render_settings();
+        break;
+
+      case VG_RENDER_BLUETOOTH:
+        vg_render_bluetooth();
+        break;
+
+      case VG_RENDER_WATCHFACE:
+        vg_render_watchface_picker();
+        break;
+
+      case VG_RENDER_CURRENT:
+        vg_render_current();
+        break;
+
+      case VG_RENDER_NONE:
+      default:
+        break;
+    }
+
+  if (g_vg.navigating)
+    {
+      g_vg.navigating = false;
+      printf("VelaGuard UI NAV: finished target=%s\n",
+             vg_page_name(g_vg.current_page));
+    }
+}
+
+static void vg_render_timer_cb(lv_timer_t *timer)
+{
+  vg_process_pending_render();
+  lv_timer_pause(timer);
 }
 
 static void vg_set_font(lv_obj_t *obj)
@@ -1062,35 +1149,64 @@ static lv_obj_t *vg_round_band(lv_obj_t *parent, int32_t x, int32_t y,
 static void vg_home_event_cb(lv_event_t *event)
 {
   lv_event_code_t code = lv_event_get_code(event);
+  lv_indev_t *indev;
 
   lv_event_stop_bubbling(event);
 
   if (code == LV_EVENT_PRESSED)
     {
+      indev = lv_indev_active();
       g_vg.gesture_consumed = false;
+      g_vg.home_press_start_ms = vg_uptime_ms();
+      g_vg.home_press_moved = false;
+      g_vg.home_edit_handled = false;
+      if (indev != NULL)
+        {
+          lv_indev_get_point(indev, &g_vg.home_press_point);
+        }
       printf("VelaGuard UI: home pressed\n");
       return;
     }
-  else if (code == LV_EVENT_LONG_PRESSED)
+  else if (code == LV_EVENT_PRESSING)
     {
-      vg_nav_request(VG_PAGE_WATCHFACE_PICKER, LV_DIR_NONE, "home-long");
+      lv_point_t point;
+
+      indev = lv_indev_active();
+      if (indev == NULL || g_vg.home_press_start_ms == 0)
+        {
+          return;
+        }
+
+      lv_indev_get_point(indev, &point);
+      if (point.x - g_vg.home_press_point.x > VG_HOME_GESTURE_SLOP_PX ||
+          g_vg.home_press_point.x - point.x > VG_HOME_GESTURE_SLOP_PX ||
+          point.y - g_vg.home_press_point.y > VG_HOME_GESTURE_SLOP_PX ||
+          g_vg.home_press_point.y - point.y > VG_HOME_GESTURE_SLOP_PX)
+        {
+          g_vg.home_press_moved = true;
+        }
+      else if (!g_vg.home_press_moved && !g_vg.home_edit_handled &&
+               vg_uptime_ms() - g_vg.home_press_start_ms >=
+               VG_HOME_EDIT_LONG_MS)
+        {
+          g_vg.home_edit_handled = true;
+          printf("VelaGuard UI: watchface edit long press\n");
+          vg_nav_request(VG_PAGE_WATCHFACE_PICKER, LV_DIR_NONE,
+                         "home-long");
+        }
+
+      return;
+    }
+  else if (code == LV_EVENT_RELEASED)
+    {
+      g_vg.home_press_start_ms = 0;
       return;
     }
   else if (code == LV_EVENT_GESTURE)
     {
-      lv_indev_t *indev = lv_indev_active();
-      lv_dir_t dir = indev == NULL ? LV_DIR_NONE :
-                     lv_indev_get_gesture_dir(indev);
-
-      if (dir == LV_DIR_LEFT || dir == LV_DIR_RIGHT)
-        {
-          vg_nav_request(VG_PAGE_BLUETOOTH, dir, "home-gesture");
-        }
-      else
-        {
-          printf("VelaGuard UI: home gesture dir=%d ignored\n",
-                 (int)dir);
-        }
+      g_vg.home_press_moved = true;
+      g_vg.home_press_start_ms = 0;
+      vg_navigation_gesture_cb(event);
     }
 }
 
@@ -1109,19 +1225,35 @@ static void vg_bluetooth_event_cb(lv_event_t *event)
 
   if (code == LV_EVENT_GESTURE)
     {
-      lv_indev_t *indev = lv_indev_active();
-      lv_dir_t dir = indev == NULL ? LV_DIR_NONE :
-                     lv_indev_get_gesture_dir(indev);
+      vg_navigation_gesture_cb(event);
+    }
+}
 
-      if (dir == LV_DIR_LEFT || dir == LV_DIR_RIGHT)
-        {
-          vg_nav_request(VG_PAGE_HOME, dir, "bluetooth-gesture");
-        }
-      else
-        {
-          printf("VelaGuard UI: bluetooth gesture dir=%d ignored\n",
-                 (int)dir);
-        }
+static void vg_navigation_gesture_cb(lv_event_t *event)
+{
+  lv_indev_t *indev;
+  lv_dir_t dir;
+
+  if (lv_event_get_code(event) != LV_EVENT_GESTURE)
+    {
+      return;
+    }
+
+  indev = lv_indev_active();
+  dir = indev == NULL ? LV_DIR_NONE : lv_indev_get_gesture_dir(indev);
+  if (dir != LV_DIR_LEFT && dir != LV_DIR_RIGHT)
+    {
+      printf("VelaGuard UI: gesture dir=%d ignored\n", (int)dir);
+      return;
+    }
+
+  if (g_vg.current_page == VG_PAGE_HOME)
+    {
+      vg_nav_request(VG_PAGE_BLUETOOTH, dir, "page-gesture");
+    }
+  else if (g_vg.current_page == VG_PAGE_BLUETOOTH)
+    {
+      vg_nav_request(VG_PAGE_HOME, dir, "page-gesture");
     }
 }
 
@@ -1154,7 +1286,7 @@ static void vg_ble_toggle_event_cb(lv_event_t *event)
   target = !vg_ble_is_enabled();
   vg_ble_request_set_enabled(target);
   printf("VelaGuard UI: BLE toggle request target=%d\n", target ? 1 : 0);
-  vg_render_bluetooth();
+  vg_schedule_render(VG_RENDER_BLUETOOTH);
 }
 
 static lv_obj_t *vg_action_button(lv_obj_t *parent, const char *text,
@@ -1183,9 +1315,6 @@ static const char *vg_page_name(enum vg_page_e page)
 static void vg_nav_request(enum vg_page_e target, lv_dir_t dir,
                            const char *source)
 {
-  uint64_t begin_ms;
-  uint64_t elapsed_ms;
-
   printf("VelaGuard UI NAV: request source=%s dir=%d current=%s target=%s busy=%d consumed=%d\n",
          source, (int)dir, vg_page_name(g_vg.current_page),
          vg_page_name(target), g_vg.navigating ? 1 : 0,
@@ -1201,31 +1330,24 @@ static void vg_nav_request(enum vg_page_e target, lv_dir_t dir,
   g_vg.navigating = true;
   g_vg.gesture_consumed = true;
   g_vg.target_page = target;
-  begin_ms = vg_uptime_ms();
   printf("VelaGuard UI NAV: accepted %s -> %s\n",
          vg_page_name(g_vg.current_page), vg_page_name(target));
 
   switch (target)
     {
       case VG_PAGE_BLUETOOTH:
-        vg_render_bluetooth();
+        vg_schedule_render(VG_RENDER_BLUETOOTH);
         break;
 
       case VG_PAGE_WATCHFACE_PICKER:
-        vg_render_watchface_picker();
+        vg_schedule_render(VG_RENDER_WATCHFACE);
         break;
 
       case VG_PAGE_HOME:
       default:
-        vg_render_home();
+        vg_schedule_render(VG_RENDER_HOME);
         break;
     }
-
-  elapsed_ms = vg_uptime_ms() - begin_ms;
-  g_vg.current_page = target;
-  g_vg.navigating = false;
-  printf("VelaGuard UI NAV: finished target=%s elapsed=%llums\n",
-         vg_page_name(target), (unsigned long long)elapsed_ms);
 }
 
 static void vg_action_cb(lv_event_t *event)
@@ -1271,20 +1393,20 @@ static void vg_action_cb(lv_event_t *event)
         break;
 
       case VG_ACTION_HISTORY:
-        vg_render_history();
+        vg_schedule_render(VG_RENDER_HISTORY);
         break;
 
       case VG_ACTION_SETTINGS:
-        vg_render_settings();
+        vg_schedule_render(VG_RENDER_SETTINGS);
         break;
 
       case VG_ACTION_BLUETOOTH:
-        vg_render_bluetooth();
+        vg_schedule_render(VG_RENDER_BLUETOOTH);
         break;
 
       case VG_ACTION_BLE_TOGGLE:
         vg_ble_request_set_enabled(!vg_ble_is_enabled());
-        vg_render_bluetooth();
+        vg_schedule_render(VG_RENDER_BLUETOOTH);
         break;
 
       case VG_ACTION_FALL_CANCEL_HOLD:
@@ -1293,22 +1415,22 @@ static void vg_action_cb(lv_event_t *event)
 
       case VG_ACTION_DIAL_RAINBOW:
         g_vg.watchface = 0;
-        vg_render_home();
+        vg_schedule_render(VG_RENDER_HOME);
         break;
 
       case VG_ACTION_DIAL_SIMPLE:
         g_vg.watchface = 1;
-        vg_render_home();
+        vg_schedule_render(VG_RENDER_HOME);
         break;
 
       case VG_ACTION_MODE:
         g_vg.mode = (g_vg.mode + 1) % 4;
-        vg_render_settings();
+        vg_schedule_render(VG_RENDER_SETTINGS);
         break;
 
       case VG_ACTION_BACK:
       default:
-        vg_render_current();
+        vg_schedule_render(VG_RENDER_CURRENT);
         break;
     }
 }
@@ -1412,7 +1534,7 @@ static void vg_hold_button_cb(lv_event_t *event)
           g_vg.active.type == VG_EVENT_FALL &&
           g_vg.hold_overlay != NULL)
         {
-          vg_render_alert();
+          vg_schedule_render(VG_RENDER_ALERT);
         }
 
       lv_event_stop_bubbling(event);
@@ -1834,21 +1956,35 @@ static void vg_update_alarm_hold(void)
 
 static void vg_render_home(void)
 {
-  lv_obj_t *scr = vg_screen_reset();
+  lv_obj_t *scr;
   lv_obj_t *root;
 #if VG_LIGHTWEIGHT_UI
   lv_obj_t *panel;
 #endif
 
+  /* Home and Bluetooth are the normal gesture pair.  Reusing their object
+   * trees avoids freeing LVGL allocations while the device is active. */
+  if (g_vg.home_root != NULL && g_vg.bluetooth_root != NULL)
+    {
+      g_vg.current_page = VG_PAGE_HOME;
+      lv_obj_clear_flag(g_vg.home_root, LV_OBJ_FLAG_HIDDEN);
+      lv_obj_add_flag(g_vg.bluetooth_root, LV_OBJ_FLAG_HIDDEN);
+      vg_update_watchface_time();
+      return;
+    }
+
+  scr = vg_screen_reset();
   g_vg.current_page = VG_PAGE_HOME;
   lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), LV_PART_MAIN);
-  lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(scr, vg_home_event_cb, LV_EVENT_GESTURE, NULL);
+  lv_obj_add_event_cb(scr, vg_navigation_gesture_cb, LV_EVENT_GESTURE,
+                      NULL);
 
   root = vg_fixed_root(scr);
+  g_vg.home_root = root;
   lv_obj_add_flag(root, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(root, vg_home_event_cb, LV_EVENT_PRESSED, NULL);
-  lv_obj_add_event_cb(root, vg_home_event_cb, LV_EVENT_LONG_PRESSED, NULL);
+  lv_obj_add_event_cb(root, vg_home_event_cb, LV_EVENT_PRESSING, NULL);
+  lv_obj_add_event_cb(root, vg_home_event_cb, LV_EVENT_RELEASED, NULL);
   lv_obj_add_event_cb(root, vg_home_event_cb, LV_EVENT_GESTURE, NULL);
 
   g_vg.home_last_minute = -1;
@@ -1935,6 +2071,7 @@ static void vg_render_home(void)
 #endif
 
   vg_update_watchface_time();
+  vg_create_bluetooth_page(scr);
 }
 
 static void vg_render_prealert(void)
@@ -1964,7 +2101,7 @@ static void vg_render_alert(void)
       lv_obj_set_size(g_vg.countdown_arc, VG_X(86), VG_X(86));
       lv_obj_align(g_vg.countdown_arc, LV_ALIGN_TOP_MID, 0, VG_Y(34));
       lv_arc_set_range(g_vg.countdown_arc, 0, 100);
-      lv_arc_set_value(g_vg.countdown_arc, 0);
+      lv_arc_set_value(g_vg.countdown_arc, 100);
       lv_arc_set_bg_angles(g_vg.countdown_arc, 0, 360);
       lv_arc_set_rotation(g_vg.countdown_arc, 270);
       lv_obj_remove_style(g_vg.countdown_arc, NULL, LV_PART_KNOB);
@@ -1989,6 +2126,7 @@ static void vg_render_alert(void)
       lv_obj_align(label, LV_ALIGN_TOP_MID, 0, VG_Y(122));
       vg_round_band(root, VG_X(45), VG_Y(197), VG_X(150), VG_Y(48),
                     0x68424d, "正在求助中");
+      vg_update_manual_sos_progress(vg_uptime_ms());
       return;
     }
 
@@ -2110,9 +2248,8 @@ static void vg_render_settings(void)
                    VG_ACTION_BACK);
 }
 
-static void vg_render_bluetooth(void)
+static void vg_create_bluetooth_page(lv_obj_t *scr)
 {
-  lv_obj_t *scr = vg_screen_reset();
   lv_obj_t *root;
   lv_obj_t *label;
   lv_obj_t *sw;
@@ -2121,12 +2258,8 @@ static void vg_render_bluetooth(void)
   char addr[40];
   bool ble_switch_on;
 
-  g_vg.current_page = VG_PAGE_BLUETOOTH;
-  lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), LV_PART_MAIN);
-  lv_obj_add_flag(scr, LV_OBJ_FLAG_CLICKABLE);
-  lv_obj_add_event_cb(scr, vg_bluetooth_event_cb, LV_EVENT_GESTURE, NULL);
-
   root = vg_fixed_root(scr);
+  g_vg.bluetooth_root = root;
   lv_obj_add_flag(root, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(root, vg_bluetooth_event_cb, LV_EVENT_PRESSED, NULL);
   lv_obj_add_event_cb(root, vg_bluetooth_event_cb, LV_EVENT_GESTURE, NULL);
@@ -2181,6 +2314,60 @@ static void vg_render_bluetooth(void)
   lv_obj_align(label, LV_ALIGN_TOP_LEFT, VG_X(18), VG_Y(150));
   label = vg_label(root, addr, VG_X(204), LV_TEXT_ALIGN_LEFT, VG_COLOR_TEXT);
   lv_obj_align(label, LV_ALIGN_TOP_LEFT, VG_X(18), VG_Y(184));
+  g_vg.bluetooth_addr_label = label;
+
+  lv_obj_add_flag(root, LV_OBJ_FLAG_HIDDEN);
+}
+
+static void vg_update_bluetooth_page(bool force)
+{
+  char addr[40];
+  uint64_t now;
+
+  if (g_vg.bluetooth_addr_label == NULL)
+    {
+      return;
+    }
+
+  now = vg_uptime_ms();
+  if (!force && now - g_vg.bluetooth_last_refresh_ms < 1000)
+    {
+      return;
+    }
+
+  g_vg.bluetooth_last_refresh_ms = now;
+  vg_ble_get_local_address(addr, sizeof(addr));
+  if (strcmp(addr, "initializing") == 0)
+    {
+      strlcpy(addr, "蓝牙初始化中", sizeof(addr));
+    }
+  else if (strcmp(addr, "pending") == 0)
+    {
+      strlcpy(addr, "地址未就绪", sizeof(addr));
+    }
+
+  if (strcmp(lv_label_get_text(g_vg.bluetooth_addr_label), addr) != 0)
+    {
+      lv_label_set_text(g_vg.bluetooth_addr_label, addr);
+    }
+}
+
+static void vg_render_bluetooth(void)
+{
+  if (g_vg.home_root == NULL || g_vg.bluetooth_root == NULL)
+    {
+      vg_render_home();
+    }
+
+  if (g_vg.home_root == NULL || g_vg.bluetooth_root == NULL)
+    {
+      return;
+    }
+
+  g_vg.current_page = VG_PAGE_BLUETOOTH;
+  lv_obj_add_flag(g_vg.home_root, LV_OBJ_FLAG_HIDDEN);
+  lv_obj_clear_flag(g_vg.bluetooth_root, LV_OBJ_FLAG_HIDDEN);
+  vg_update_bluetooth_page(true);
 }
 
 
@@ -2388,12 +2575,23 @@ static void vg_buttons_init(void)
       printf("VelaGuard: button device %s unavailable: %d\n",
              CONFIG_CONTEST2026_148_VELAGUARD_BUTTON_DEVPATH, errno);
     }
+  else
+    {
+      /* Do not treat a level present while the GPIO settles as a press. */
+      g_vg.last_buttons = 0;
+      g_vg.button_down_ms = 0;
+      g_vg.button_arm_release_ms = 0;
+      g_vg.button_release_candidate_ms = 0;
+      g_vg.button_long_handled = false;
+      g_vg.button_armed = false;
+    }
 }
 
 static void vg_buttons_poll(void)
 {
   btn_buttonset_t sample;
   ssize_t nread;
+  uint64_t now;
 
   if (g_vg.button_fd < 0)
     {
@@ -2406,10 +2604,38 @@ static void vg_buttons_poll(void)
       return;
     }
 
+  now = vg_uptime_ms();
+
+  /*
+   * The button GPIO can be high while the board is powering up.  Arm the
+   * long-press detector only after a stable released sample has been seen.
+   */
+  if (!g_vg.button_armed)
+    {
+      if (sample & VG_SOS_BUTTON_BIT)
+        {
+          g_vg.button_arm_release_ms = 0;
+        }
+      else if (g_vg.button_arm_release_ms == 0)
+        {
+          g_vg.button_arm_release_ms = now;
+        }
+      else if (now - g_vg.button_arm_release_ms >=
+               VG_BUTTON_RELEASE_DEBOUNCE_MS)
+        {
+          g_vg.button_armed = true;
+          g_vg.button_arm_release_ms = 0;
+          printf("VelaGuard UI: SOS button armed after startup release\n");
+        }
+
+      g_vg.last_buttons = sample;
+      return;
+    }
+
   if ((sample & VG_SOS_BUTTON_BIT) &&
       g_vg.button_down_ms == 0)
     {
-      g_vg.button_down_ms = vg_uptime_ms();
+      g_vg.button_down_ms = now;
       g_vg.button_release_candidate_ms = 0;
       g_vg.button_long_handled = false;
       printf("VelaGuard UI: SOS button down\n");
@@ -2417,32 +2643,38 @@ static void vg_buttons_poll(void)
 
   if ((sample & VG_SOS_BUTTON_BIT) && !g_vg.button_long_handled &&
       g_vg.button_down_ms != 0 &&
-      vg_uptime_ms() - g_vg.button_down_ms >= VG_SOS_LONG_MS)
+      now - g_vg.button_down_ms >= VG_SOS_LONG_MS)
     {
       g_vg.button_long_handled = true;
       g_vg.sos_prompt_visible = false;
       printf("VelaGuard UI: SOS long press threshold reached elapsed=%llu ms\n",
-             (unsigned long long)(vg_uptime_ms() - g_vg.button_down_ms));
+             (unsigned long long)(now - g_vg.button_down_ms));
       if (g_vg.state == VG_STATE_GUARDING)
         {
           vg_trigger_event(VG_EVENT_MANUAL_SOS);
         }
     }
 
-  if (!(sample & VG_SOS_BUTTON_BIT) &&
-      (g_vg.last_buttons & VG_SOS_BUTTON_BIT))
+  if (!(sample & VG_SOS_BUTTON_BIT) && g_vg.button_down_ms != 0)
     {
       if (g_vg.button_release_candidate_ms == 0)
         {
-          g_vg.button_release_candidate_ms = vg_uptime_ms();
+          g_vg.button_release_candidate_ms = now;
         }
-      else if (vg_uptime_ms() - g_vg.button_release_candidate_ms >=
+      else if (now - g_vg.button_release_candidate_ms >=
                VG_BUTTON_RELEASE_DEBOUNCE_MS)
         {
-          if (!g_vg.button_long_handled && g_vg.sos_prompt_visible)
+          if (g_vg.button_long_handled &&
+              g_vg.state == VG_STATE_PREALERT &&
+              g_vg.active.type == VG_EVENT_MANUAL_SOS)
+            {
+              printf("VelaGuard UI: SOS released during countdown, cancel\n");
+              vg_cancel_event();
+            }
+          else if (!g_vg.button_long_handled && g_vg.sos_prompt_visible)
             {
               g_vg.sos_prompt_visible = false;
-              vg_render_home();
+              vg_schedule_render(VG_RENDER_HOME);
             }
 
           g_vg.button_down_ms = 0;
@@ -2473,6 +2705,10 @@ static void vg_tick_cb(lv_timer_t *timer)
 
   now = vg_uptime_ms();
   vg_update_watchface_time();
+  if (g_vg.current_page == VG_PAGE_BLUETOOTH)
+    {
+      vg_update_bluetooth_page(false);
+    }
   vg_update_alarm_hold();
 
   if (g_vg.alarm_img != NULL)
@@ -2523,15 +2759,34 @@ static void vg_tick_cb(lv_timer_t *timer)
   if (g_vg.active.type == VG_EVENT_MANUAL_SOS &&
       g_vg.countdown_arc != NULL)
     {
-      int arc_value = (int)((elapsed * 100) / total_ms);
-
-      if (arc_value > 100)
-        {
-          arc_value = 100;
-        }
-
-      lv_arc_set_value(g_vg.countdown_arc, arc_value);
+      vg_update_manual_sos_progress(now);
     }
+}
+
+static void vg_update_manual_sos_progress(uint64_t now)
+{
+  uint64_t elapsed;
+  uint64_t total_ms;
+  int arc_value;
+
+  if (g_vg.countdown_arc == NULL || g_vg.countdown_start_ms == 0 ||
+      g_vg.countdown_total <= 0)
+    {
+      return;
+    }
+
+  total_ms = (uint64_t)g_vg.countdown_total * 1000;
+  elapsed = now - g_vg.countdown_start_ms;
+  if (elapsed >= total_ms)
+    {
+      arc_value = 0;
+    }
+  else
+    {
+      arc_value = (int)(((total_ms - elapsed) * 100) / total_ms);
+    }
+
+  lv_arc_set_value(g_vg.countdown_arc, arc_value);
 }
 
 static void vg_audio_process(void)
@@ -2591,6 +2846,74 @@ static int vg_wait_for_device(const char *path, unsigned int timeout_ms)
   return 0;
 }
 
+static void vg_audio_start_once(void)
+{
+#ifdef CONFIG_CONTEST2026_148_MIC_CAPTURE
+  if (g_vg.audio_start_attempted)
+    {
+      return;
+    }
+
+  g_vg.audio_start_attempted = true;
+  if (vg_audio_capture_start() == 0)
+    {
+      g_vg.audio_ready = true;
+      printf("VelaGuard audio: capture started before BLE bring-up\n");
+    }
+  else
+    {
+      printf("VelaGuard audio: microphone capture unavailable\n");
+    }
+#else
+  printf("VelaGuard audio: microphone capture disabled\n");
+#endif
+}
+
+static void vg_audio_feedback_start(enum vg_feedback_type_e type)
+{
+#ifdef CONFIG_CONTEST2026_148_AUDIO_FEEDBACK
+  if (vg_audio_feedback_active() || vg_audio_feedback_trigger(type) < 0)
+    {
+      return;
+    }
+
+  /* SF32LB52 uses one codec/DMA complex for ADC capture and DAC playback.
+   * Do not leave capture's message queue and DMA in flight while opening the
+   * playback stream.  Feedback is brief; capture resumes on completion. */
+  if (g_vg.audio_ready)
+    {
+      printf("VelaGuard audio: pause capture for feedback\n");
+      vg_audio_capture_stop();
+      g_vg.audio_ready = false;
+      g_vg.audio_resume_after_feedback = true;
+    }
+#else
+  (void)type;
+#endif
+}
+
+static void vg_audio_resume_after_feedback(void)
+{
+#if defined(CONFIG_CONTEST2026_148_AUDIO_FEEDBACK) && \
+    defined(CONFIG_CONTEST2026_148_MIC_CAPTURE)
+  if (!g_vg.audio_resume_after_feedback || vg_audio_feedback_active())
+    {
+      return;
+    }
+
+  g_vg.audio_resume_after_feedback = false;
+  if (vg_audio_capture_start() == 0)
+    {
+      g_vg.audio_ready = true;
+      printf("VelaGuard audio: capture resumed after feedback\n");
+    }
+  else
+    {
+      printf("VelaGuard audio: capture resume failed\n");
+    }
+#endif
+}
+
 static void vg_audio_headless_loop(void)
 {
   unsigned int report_ms = 0;
@@ -2600,6 +2923,7 @@ static void vg_audio_headless_loop(void)
     {
       vg_ble_service_poll();
       vg_ble_process_time();
+      vg_audio_process();
 
       if (g_vg.audio_ready &&
           vg_audio_capture_level(&g_vg.audio_level, &g_vg.audio_sequence,
@@ -2632,6 +2956,7 @@ int main(int argc, FAR char *argv[])
   lv_nuttx_result_t result;
   bool input_ready = false;
   int warmup;
+  int ret;
 
   (void)argc;
   (void)argv;
@@ -2657,13 +2982,6 @@ int main(int argc, FAR char *argv[])
   boardctl(BOARDIOC_INIT, 0);
 #endif
 
-  /* Bluetooth Framework owns several IPC/file descriptors during bring-up.
-   * Defer creation of the audio message queue until BLE is ready so the two
-   * asynchronous subsystems cannot race while the process fd table settles.
-   */
-
-  g_vg.audio_start_deadline_ms = vg_uptime_ms() + VG_AUDIO_STARTUP_WAIT_MS;
-
 #ifdef CONFIG_LV_USE_NUTTX_LCD
   vg_wait_for_device("/dev/lcd0", VG_DEVICE_WAIT_MS);
 #endif
@@ -2679,21 +2997,26 @@ int main(int argc, FAR char *argv[])
     VG_DEVICE_WAIT_MS) == 0;
 #endif
 
+  /* Complete the audio DMA setup before Bluetooth begins ATT/GATT work.
+   * The audio capture path is non-blocking after this point. */
+  vg_audio_start_once();
+
+  /* Keep Framework/H4 ownership and initialization ahead of LVGL.  Retrying
+   * bluetooth_create_instance() from the UI loop can create a second client
+   * after a partial bring-up, so a failed startup is reported and left intact
+   * for diagnosis until the next system boot. */
+  printf("VelaGuard BLE: service init attempt\n");
+  ret = vg_ble_init();
+  printf("VelaGuard BLE: init ret=%d\n", ret);
+  if (ret < 0)
+    {
+      printf("VelaGuard BLE: initialization failed; retry is disabled until reboot\n");
+    }
+
 #ifdef CONFIG_CONTEST2026_148_VELAGUARD_HEADLESS
   printf("VelaGuard: headless BLE isolation mode\n");
-  if (vg_audio_capture_start() == 0)
-    {
-      g_vg.audio_ready = true;
-    }
-  else
-    {
-      printf("VelaGuard audio: microphone capture unavailable\n");
-    }
-  for (;;)
-    {
-      vg_audio_process();
-      usleep(1000000);
-    }
+  vg_audio_headless_loop();
+  return 0;
 #endif
 
   lv_init();
@@ -2746,6 +3069,8 @@ int main(int argc, FAR char *argv[])
   g_vg.tick_timer = lv_timer_create(vg_tick_cb, VG_TICK_PERIOD_MS, NULL);
   g_vg.imu_timer = lv_timer_create(vg_imu_timer_cb, VG_IMU_UI_PERIOD_MS,
                                    NULL);
+  g_vg.render_timer = lv_timer_create(vg_render_timer_cb, 1, NULL);
+  lv_timer_pause(g_vg.render_timer);
 
   for (warmup = 0; warmup < 3; warmup++)
     {
@@ -2755,31 +3080,15 @@ int main(int argc, FAR char *argv[])
 
   for (; ; )
     {
-      /* BLE service polling must precede audio capture.  HCI bring-up runs
-       * asynchronously; entering the audio mq wait first can collide with
-       * the controller response path on SF32LB52. */
+      /* Audio capture has already been initialized before BLE; the loop only
+       * polls its non-blocking message queue after advancing BLE state. */
       vg_ble_service_poll();
       vg_ble_process_time();
-
-      if (!g_vg.audio_start_attempted &&
-          (vg_ble_is_ready() ||
-           vg_uptime_ms() >= g_vg.audio_start_deadline_ms))
-        {
-          g_vg.audio_start_attempted = true;
-          if (vg_audio_capture_start() == 0)
-            {
-              g_vg.audio_ready = true;
-              printf("VelaGuard audio: capture started after BLE bring-up\n");
-            }
-          else
-            {
-              printf("VelaGuard audio: microphone capture unavailable\n");
-            }
-        }
 
       vg_audio_process();
 #ifdef CONFIG_CONTEST2026_148_AUDIO_FEEDBACK
       vg_audio_feedback_process();
+      vg_audio_resume_after_feedback();
 #endif
 
       uint32_t idle = lv_timer_handler();

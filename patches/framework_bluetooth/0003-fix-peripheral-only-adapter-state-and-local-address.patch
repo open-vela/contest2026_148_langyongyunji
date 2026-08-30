@@ -1,0 +1,35 @@
+diff --git a/service/src/adapter_service.c b/service/src/adapter_service.c
+--- a/service/src/adapter_service.c
++++ b/service/src/adapter_service.c
+@@ -60,8 +60,9 @@
+ 
+ #define CALLBACK_FOREACH(_list, _struct, _cback, ...) BT_CALLBACK_FOREACH(_list, _struct, _cback, ##__VA_ARGS__)
+ 
+-#define CHECK_ADAPTER_READY()                                     \
+-    if (g_adapter_service.adapter_state != BT_ADAPTER_STATE_ON) { \
++#define CHECK_ADAPTER_READY()                                                     \
++    if (g_adapter_service.adapter_state != BT_ADAPTER_STATE_ON &&                \
++        g_adapter_service.adapter_state != BT_ADAPTER_STATE_BLE_ON) {            \
+         status = BT_STATUS_NOT_ENABLED;                           \
+         goto error;                                               \
+     }
+@@ -2236,7 +2237,18 @@ bool adapter_is_discovering(void)
+ void adapter_get_address(bt_address_t* addr)
+ {
+     adapter_lock();
++#ifdef CONFIG_BLUETOOTH_BLE_SUPPORT
++    /* Peripheral-only builds do not enable BR/EDR, so properties.addr is
++     * intentionally empty.  The controller identity is kept in the LE
++     * adapter properties and must be returned to Framework clients. */
++    if (bt_addr_is_empty(&g_adapter_service.properties.addr) &&
++        !bt_addr_is_empty(&g_adapter_service.le_properties.addr)) {
++        memcpy(addr, &g_adapter_service.le_properties.addr, sizeof(bt_address_t));
++    } else
++#endif
++    {
+     memcpy(addr, &g_adapter_service.properties.addr, sizeof(bt_address_t));
++    }
+     adapter_unlock();
+ }
+ 
+ bt_status_t adapter_set_name(const char* name)

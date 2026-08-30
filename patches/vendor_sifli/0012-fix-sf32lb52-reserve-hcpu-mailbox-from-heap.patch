@@ -1,0 +1,36 @@
+diff --git a/chips/sf32lb52/sifli_allocateheap.c b/chips/sf32lb52/sifli_allocateheap.c
+--- a/chips/sf32lb52/sifli_allocateheap.c
++++ b/chips/sf32lb52/sifli_allocateheap.c
+@@ -31,6 +31,7 @@
+ #include "chip.h"
+ #include "arm_internal.h"
+ #include "bf0_hal.h"
++#include "mem_map.h"
+ 
+ extern void BSP_PIN_Init(void);
+ extern void BSP_Power_Up(bool is_deep_sleep);
+@@ -46,6 +47,11 @@ extern void BSP_Board_PreInit(void);
+ #define SRAM_SIZE   0x00080000    /* 512 KB */
+ #define SRAM_END    (SRAM_START + SRAM_SIZE)
+ 
++/* The last 1 KiB of HCPU SRAM belongs to the HCPU-to-LCPU mailbox.  It is
++ * used by Bluetooth IPC and must never be handed to the NuttX heap. */
++
++#define SRAM_HEAP_END HCPU2LCPU_MB_CH2_BUF_START_ADDR
++
+ /* PSRAM memory configuration for SF32LB52 (MPI1 SBUS) */
+ 
+ #define PSRAM_START 0x60000000
+@@ -160,10 +166,10 @@ void HAL_PreInit(void)
+ 
+ void up_allocate_heap(FAR void **heap_start, size_t *heap_size)
+ {
+-  /* The heap starts at g_idle_topstack and extends to the end of SRAM */
++  /* Leave the HCPU-to-LCPU mailbox region at the end of SRAM untouched. */
+   
+   *heap_start = (FAR void *)g_idle_topstack;
+-  *heap_size  = SRAM_END - g_idle_topstack;
++  *heap_size  = SRAM_HEAP_END - g_idle_topstack;
+ }
+ 
+ /******************************************************************************

@@ -9,7 +9,6 @@
 #include <errno.h>
 #include <nuttx/irq.h>
 #include <nuttx/spinlock.h>
-#include <nuttx/wqueue.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -27,7 +26,11 @@
 #define VG_BLE_ADDR_TEXT_LEN        18
 #define VG_BLE_HEARTBEAT_MS         1000
 #define VG_BLE_TEST_NOTIFY_MS       1000
+#define VG_BLE_CCC_SETTLE_MS         1500
+#define VG_BLE_DIAG_PERIOD_MS        2000
+#define VG_BLE_ADDR_RETRY_MS         1000
 #define VG_BLE_ADV_RETRY_SKIP       250
+#define VG_BLE_ADV_RESTART_SKIP     125
 
 #define VG_BLE_UUID_BYTES(id) \
   (id), 0x00, 0x47, 0x56, 0x64, 0x72, 0x61, 0x93, \
@@ -75,8 +78,10 @@ static bool g_vg_advertising;
 static bool g_vg_adv_starting;
 static bool g_vg_call_pending;
 static bool g_vg_local_addr_default;
+static bool g_vg_local_addr_unavailable_logged;
 static volatile bool g_vg_test_notify_enabled;
 static volatile bool g_vg_test_probe_seen;
+static volatile bool g_vg_notify_settle_pending;
 static volatile bool g_vg_enable_request_pending;
 static volatile bool g_vg_enable_request_target;
 static volatile bool g_vg_start_advertising_pending;
@@ -87,25 +92,14 @@ static uint64_t g_vg_last_time_sync_ms;
 static uint64_t g_vg_pending_time_sync_ms;
 static uint64_t g_vg_last_test_notify_ms;
 static uint64_t g_vg_last_status_notify_ms;
-static struct work_s g_vg_status_work;
+static uint64_t g_vg_notify_ready_after_ms;
+static uint64_t g_vg_last_diag_ms;
+static uint64_t g_vg_last_local_addr_attempt_ms;
 static uint32_t g_vg_test_counter;
 static uint8_t g_vg_last_test_value;
 static uint16_t g_vg_event_ccc_value;
 static uint16_t g_vg_status_ccc_value;
 static uint16_t g_vg_test_ccc_value;
-
-static void vg_ble_status_worker(void *arg);
-
-static void vg_ble_schedule_status_work(void)
-{
-  if (g_vg_connected && g_vg_status_notify_enabled &&
-      g_vg_peer_addr_valid && g_vg_service_registered &&
-      work_available(&g_vg_status_work))
-    {
-      (void)work_queue(LPWORK, &g_vg_status_work, vg_ble_status_worker,
-                       NULL, MSEC2TICK(VG_BLE_HEARTBEAT_MS));
-    }
-}
 
 static uint64_t vg_ble_get_le64(const uint8_t *data)
 {
@@ -188,9 +182,22 @@ static bool vg_ble_framework_ready(void)
 static void vg_ble_cache_local_address(void)
 {
   bt_address_t addr;
+  uint64_t now;
 
-  strlcpy(g_vg_local_addr, "pending", sizeof(g_vg_local_addr));
-  g_vg_local_addr_default = false;
+  if (g_vg_local_addr[0] != '\0' &&
+      strcmp(g_vg_local_addr, "pending") != 0)
+    {
+      return;
+    }
+
+  now = vg_ble_monotonic_ms();
+  if (g_vg_last_local_addr_attempt_ms != 0 &&
+      now - g_vg_last_local_addr_attempt_ms < VG_BLE_ADDR_RETRY_MS)
+    {
+      return;
+    }
+
+  g_vg_last_local_addr_attempt_ms = now;
 
   if (g_vg_bt == NULL)
     {
@@ -201,11 +208,16 @@ static void vg_ble_cache_local_address(void)
   bt_adapter_get_address(g_vg_bt, &addr);
   if (bt_addr_is_empty(&addr) || bt_addr_ba2str(&addr, g_vg_local_addr) < 0)
     {
-      printf("VelaGuard BLE: local adapter address unavailable\n");
+      if (!g_vg_local_addr_unavailable_logged)
+        {
+          printf("VelaGuard BLE: local adapter address unavailable\n");
+          g_vg_local_addr_unavailable_logged = true;
+        }
       strlcpy(g_vg_local_addr, "pending", sizeof(g_vg_local_addr));
       return;
     }
 
+  g_vg_local_addr_unavailable_logged = false;
   g_vg_local_addr_default =
     strcmp(g_vg_local_addr, "CD:AB:78:56:34:12") == 0 ||
     strcmp(g_vg_local_addr, "12:34:56:78:AB:CD") == 0;
@@ -221,6 +233,9 @@ static uint16_t vg_ble_attr_read(gatts_handle_t srv_handle,
   uint8_t status_value;
   uint8_t *data = NULL;
   uint16_t len = 0;
+
+  printf("VelaGuard BLE: read handle=0x%04x request=0x%08lx\n",
+         attr_handle, (unsigned long)req_handle);
 
   switch (attr_handle)
     {
@@ -325,6 +340,10 @@ static uint16_t vg_ble_attr_write(gatts_handle_t srv_handle,
           }
 
         ccc_value = vg_ble_get_le16(value);
+        /* The Framework sends the ATT Write Response asynchronously.  Do not
+         * queue an application notification from the main task until that
+         * response and any following CCC writes have drained. */
+        g_vg_notify_settle_pending = true;
         if (attr_handle == VG_BLE_HANDLE_EVENT_CCC)
           {
             g_vg_event_ccc_value = ccc_value;
@@ -340,7 +359,6 @@ static uint16_t vg_ble_attr_write(gatts_handle_t srv_handle,
             printf("VelaGuard BLE: status CCC value=0x%04x notifications=%s\n",
                    ccc_value,
                    g_vg_status_notify_enabled ? "enabled" : "disabled");
-            vg_ble_schedule_status_work();
           }
         else
           {
@@ -464,6 +482,8 @@ static void vg_ble_gatts_disconnected(gatts_handle_t srv_handle,
   g_vg_status_notify_enabled = false;
   g_vg_test_notify_enabled = false;
   g_vg_test_probe_seen = false;
+  g_vg_notify_settle_pending = false;
+  g_vg_notify_ready_after_ms = 0;
   g_vg_event_ccc_value = 0;
   g_vg_status_ccc_value = 0;
   g_vg_test_ccc_value = 0;
@@ -476,7 +496,9 @@ static void vg_ble_gatts_disconnected(gatts_handle_t srv_handle,
   if (g_vg_enabled)
     {
       g_vg_start_advertising_pending = true;
-      g_vg_adv_retry_skip = VG_BLE_ADV_RETRY_SKIP;
+      /* The controller needs time to finish its link teardown before the
+       * next legacy advertising command is accepted. */
+      g_vg_adv_retry_skip = VG_BLE_ADV_RESTART_SKIP;
       printf("VelaGuard BLE: phone disconnected; advertising restart scheduled\n");
     }
   else
@@ -574,30 +596,6 @@ static void vg_ble_adv_stopped(bt_advertiser_t *adv, uint8_t adv_id)
   g_vg_advertising = false;
   g_vg_adv_starting = false;
   printf("VelaGuard BLE: advertising stopped id=%u\n", adv_id);
-}
-
-static void vg_ble_status_worker(void *arg)
-{
-  uint8_t status_value;
-  bt_status_t status;
-
-  (void)arg;
-  if (!g_vg_connected || !g_vg_status_notify_enabled ||
-      !g_vg_peer_addr_valid || !g_vg_service_registered)
-    {
-      return;
-    }
-
-  status_value = g_vg_fall_status_active ? 1 : 0;
-  printf("VelaGuard BLE: STATUS heartbeat attempt value=%u\n", status_value);
-  status = bt_gatts_notify(g_vg_gatts, &g_vg_peer_addr,
-                           VG_BLE_HANDLE_STATUS, &status_value,
-                           sizeof(status_value));
-  g_vg_last_status_notify_ms = vg_ble_monotonic_ms();
-  printf("VelaGuard BLE: STATUS heartbeat value=%u result=%d status=%d\n",
-         status_value, vg_ble_status_to_errno(status), status);
-
-  vg_ble_schedule_status_work();
 }
 
 static advertiser_callback_t g_vg_adv_callbacks =
@@ -725,6 +723,9 @@ int vg_ble_init(void)
 
   memset(&g_vg_last_packet, 0, sizeof(g_vg_last_packet));
   strlcpy(g_vg_local_addr, "pending", sizeof(g_vg_local_addr));
+  g_vg_local_addr_default = false;
+  g_vg_local_addr_unavailable_logged = false;
+  g_vg_last_local_addr_attempt_ms = 0;
   printf("VelaGuard BLE: framework init start\n");
 
   g_vg_bt = bluetooth_create_instance();
@@ -741,6 +742,8 @@ int vg_ble_init(void)
   if (ret < 0)
     {
       printf("VelaGuard BLE: adapter enable LE failed status=%d\n", status);
+      bluetooth_delete_instance(g_vg_bt);
+      g_vg_bt = NULL;
       return ret;
     }
 
@@ -756,6 +759,8 @@ int vg_ble_init(void)
 void vg_ble_process(void)
 {
   int ret;
+  bool notifications_ready;
+  uint64_t now_ms;
 
   if (g_vg_enable_request_pending)
     {
@@ -810,7 +815,58 @@ void vg_ble_process(void)
         }
     }
 
-  if (g_vg_call_pending && g_vg_connected && g_vg_notify_enabled &&
+  now_ms = vg_ble_monotonic_ms();
+  if (strcmp(g_vg_local_addr, "pending") == 0)
+    {
+      vg_ble_cache_local_address();
+    }
+
+  if (g_vg_notify_settle_pending)
+    {
+      g_vg_notify_settle_pending = false;
+      g_vg_notify_ready_after_ms = now_ms + VG_BLE_CCC_SETTLE_MS;
+      printf("VelaGuard BLE: CCC update; notifications delayed %u ms\n",
+             VG_BLE_CCC_SETTLE_MS);
+    }
+
+  notifications_ready = now_ms >= g_vg_notify_ready_after_ms;
+
+  if (g_vg_last_diag_ms == 0 ||
+      now_ms - g_vg_last_diag_ms >= VG_BLE_DIAG_PERIOD_MS)
+    {
+      g_vg_last_diag_ms = now_ms;
+      printf("VelaGuard BLE: poll conn=%d status_ccc=%d peer=%d service=%d notify_ready=%d\n",
+             g_vg_connected ? 1 : 0, g_vg_status_notify_enabled ? 1 : 0,
+             g_vg_peer_addr_valid ? 1 : 0,
+             g_vg_service_registered ? 1 : 0,
+             notifications_ready ? 1 : 0);
+    }
+
+  if (notifications_ready && g_vg_connected && g_vg_status_notify_enabled &&
+      g_vg_peer_addr_valid && g_vg_service_registered)
+    {
+      if (g_vg_last_status_notify_ms == 0 ||
+          now_ms - g_vg_last_status_notify_ms >= VG_BLE_HEARTBEAT_MS)
+        {
+          uint8_t status_value = g_vg_fall_status_active ? 1 : 0;
+          bt_status_t status;
+
+          /* Framework GATT calls stay in the VelaGuard task.  Its callbacks
+           * and all outgoing notifications are then serialized. */
+          g_vg_last_status_notify_ms = now_ms;
+          printf("VelaGuard BLE: STATUS heartbeat attempt value=%u\n",
+                 status_value);
+          status = bt_gatts_notify(g_vg_gatts, &g_vg_peer_addr,
+                                   VG_BLE_HANDLE_STATUS, &status_value,
+                                   sizeof(status_value));
+          ret = vg_ble_status_to_errno(status);
+          printf("VelaGuard BLE: STATUS heartbeat value=%u result=%d status=%d\n",
+                 status_value, ret, status);
+        }
+    }
+
+  if (notifications_ready && g_vg_call_pending && g_vg_connected &&
+      g_vg_notify_enabled &&
       g_vg_peer_addr_valid && g_vg_service_registered)
     {
       struct vg_ble_call_packet_s packet;
@@ -835,11 +891,10 @@ void vg_ble_process(void)
         }
     }
 
-  if (g_vg_connected && g_vg_test_notify_enabled && g_vg_test_probe_seen &&
+  if (notifications_ready && g_vg_connected && g_vg_test_notify_enabled &&
+      g_vg_test_probe_seen &&
       g_vg_peer_addr_valid && g_vg_service_registered)
     {
-      uint64_t now_ms = vg_ble_monotonic_ms();
-
       if (g_vg_last_test_notify_ms == 0 ||
           now_ms - g_vg_last_test_notify_ms >= VG_BLE_TEST_NOTIFY_MS)
         {

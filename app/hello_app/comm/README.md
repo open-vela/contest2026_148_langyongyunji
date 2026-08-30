@@ -19,8 +19,8 @@ framework，`velaguard_ble.c` 只作为 VelaGuard 自定义 GATT Service 的 ada
 ```text
 velaguard main loop
   -> vg_ble_init()
-  -> create vg_ble task (only once)
-  -> vg_ble task: framework init/enable
+  -> Framework instance / adapter callback setup (only once)
+  -> framework enable
   -> wait adapter ready
   -> register VelaGuard GATT service
   -> start advertising
@@ -36,6 +36,49 @@ phone disconnect
 ```
 
 普通断线重连不会重新注册 Service，也不会重复初始化 Bluetooth framework。
+
+SOS 的本地告警页面与 BLE `CALL_REQUEST` 上报不依赖麦克风采集。当前配置保留 WAV
+扬声器提示，关闭 ADC 麦克风采集和语音触发；这不影响服务发现、状态心跳、校时或紧急事件
+上报。恢复采集时，应用会在播放 WAV 前暂停采集、收到播放完成消息后再恢复，避免两个流
+同时争用 SF32LB52 的音频消息队列和 DMA。
+
+## Framework 使用约束
+
+`velaguard_ble.c` 只做业务适配，调用 openvela Bluetooth Framework 的公开接口：
+
+- 只保留一次 `vg_ble_init()`、Framework instance、adapter callback 和 GATT Service
+  注册；重连不重新初始化、不重复注册。
+- 不直接调用 zblue 私有 API 或 `bt_enable()`，不直接操作 H4 UART、controller、ring
+  buffer，也不在应用层实现 Framework 的事件循环。
+- Framework 的接收、ATT/GATT 请求和 HCI 处理由官方框架线程负责；VelaGuard 主任务只处理
+  一次性初始化后的业务状态、连接状态、心跳和待发送事件。回调中只更新状态/入队，耗时操作
+  不放入框架回调。
+- 设备是 BLE Peripheral/GATT Server，App 是 Central/GATT Client。只打开 BLE 外设所需
+  配置，避免启用无业务需要的 BR/EDR、GATT Client、扫描和测试命令。
+- `vendor/sifli`、NuttX 和 Framework 的底层改动不能直接提交到主仓库；必须放到
+  `contest2026_148_langyongyunji/patches/`，由 `scripts/apply_patches.sh` 统一应用。
+  `0007`、`0008` H4 patch 属于已验证链路，必须保留并在编译日志中确认已应用。
+  `0015` 负责 TX ring 边界、D-cache 和一次性恢复保护；`0010` 只关闭逐包和 ACL 阶段
+  诊断日志，保留 ring 异常、发送超时和控制器硬件错误。`0012` 将 HCPU 尾部的 mailbox
+  内存排除在 NuttX 堆之外，避免 BLE IPC 覆盖堆元数据。`framework/0002` 为单 service
+  GATT Server 提供无链表的 ATT service 查找保护；`framework/0003` 使 Peripheral-only
+  设备的 LE identity address 能通过 Framework 的本机地址查询接口返回。
+
+当出现“可扫描/可连接，但 MTU 或服务发现超时”时，先记录以下完整链路：
+
+```text
+App connected
+-> device H4 RX received ATT request
+-> Framework/ATT produced response
+-> device H4 TX sent response
+-> App callback completed
+```
+
+不要先改 UUID、强制提高 MTU 或增加重复初始化。若 H4 RX 已有而 TX 没有，检查官方
+Framework 调度、H4 UART 接收线程和 TX ring；若 TX 已发而手机无回调，再对照 App 和空口
+抓包。当前固件已验证 App 连接、服务发现与状态心跳正常。发生新的链路异常时，可临时将
+`SF32LB52_BT_TRACE` 和 `SF32LB52_BT_ACL_STAGE_TRACE` 设为 `1` 收集一次完整链路日志；
+定位后必须恢复为 `0`，避免日志影响实时性。
 
 ## UUID
 

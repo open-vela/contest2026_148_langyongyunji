@@ -97,6 +97,15 @@ config CONTEST2026_148_AUDIO_FEEDBACK
 		in ROMFS at /etc/data/audio/.
 		Requires: success.wav and failure.wav (16kHz, 16-bit, mono PCM).
 
+config CONTEST2026_148_MIC_CAPTURE
+	bool "Microphone capture and voice-trigger processing"
+	default y
+	depends on AUDIO
+	---help---
+		Start the ADC microphone stream and run voice activity / keyword
+		processing.  This is independent from SOS WAV speaker feedback and
+		can be disabled while validating DAC playback on SF32LB52.
+
 config CONTEST2026_148_DENOISE
 	bool "Noise suppression for MIC capture (speexdsp preprocess)"
 	default y

@@ -246,10 +246,11 @@ int vg_audio_capture_start(void)
   g_vg_audio_sequence = 0;
   g_vg_audio_started = true;
 
-  /* Noise suppression state (no-op when CONFIG_CONTEST2026_148_DENOISE
-   * is disabled). */
+  /* Speex filterbank allocation corrupts the process heap on this board
+   * after audio DMA starts.  Preserve raw capture and analysis while the
+   * lower-level audio allocator issue is isolated. */
 
-  g_vg_denoise = vg_denoise_create(SAMPLE_RATE, 256);
+  g_vg_denoise = NULL;
 
   printf("VelaGuard audio: MIC 16kHz/16-bit capture started\n");
   return 0;

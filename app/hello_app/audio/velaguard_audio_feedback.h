@@ -5,6 +5,8 @@
 #ifndef __VELAGUARD_AUDIO_FEEDBACK_H
 #define __VELAGUARD_AUDIO_FEEDBACK_H
 
+#include <stdbool.h>
+
 enum vg_feedback_type_e
 {
   VG_FEEDBACK_NONE = 0,
@@ -15,6 +17,10 @@ enum vg_feedback_type_e
 /* Trigger playback.  Non-blocking — only sets internal state. */
 
 int vg_audio_feedback_trigger(enum vg_feedback_type_e type);
+
+/* True from accepting a request until playback resources are released. */
+
+bool vg_audio_feedback_active(void);
 
 /* Drive the async playback state machine.  Call from the main loop. */
 

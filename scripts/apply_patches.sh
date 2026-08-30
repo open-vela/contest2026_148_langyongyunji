@@ -22,6 +22,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PATCH_DIR="${SCRIPT_DIR}/../patches/vendor_sifli"
 SIFLI_DIR="${SCRIPT_DIR}/../../vendor/sifli"
+ZBLUE_PATCH_DIR="${SCRIPT_DIR}/../patches/zblue"
+ZBLUE_DIR="${SCRIPT_DIR}/../../external/zblue/zblue"
+FRAMEWORK_PATCH_DIR="${SCRIPT_DIR}/../patches/framework_bluetooth"
+FRAMEWORK_DIR="${SCRIPT_DIR}/../../apps/frameworks/connectivity/bluetooth"
 STAMP_FILE="${SCRIPT_DIR}/.patches_applied"
 
 MODE="apply"
@@ -42,10 +46,34 @@ if [[ ! -d "${PATCH_DIR}" ]]; then
   exit 1
 fi
 
+if [[ ! -d "${ZBLUE_DIR}" || ! -d "${ZBLUE_PATCH_DIR}" ]]; then
+  echo "[apply_patches] ERROR: ZBlue source or patch directory not found" >&2
+  exit 1
+fi
+
+if [[ ! -d "${FRAMEWORK_DIR}" || ! -d "${FRAMEWORK_PATCH_DIR}" ]]; then
+  echo "[apply_patches] ERROR: Bluetooth Framework source or patch directory not found" >&2
+  exit 1
+fi
+
 mapfile -t PATCHES < <(find "${PATCH_DIR}" -maxdepth 1 -type f \
+  -name '*.patch' -print | sort)
+mapfile -t ZBLUE_PATCHES < <(find "${ZBLUE_PATCH_DIR}" -maxdepth 1 -type f \
+  -name '*.patch' -print | sort)
+mapfile -t FRAMEWORK_PATCHES < <(find "${FRAMEWORK_PATCH_DIR}" -maxdepth 1 -type f \
   -name '*.patch' -print | sort)
 if [[ ${#PATCHES[@]} -eq 0 ]]; then
   echo "[apply_patches] ERROR: no .patch files found in ${PATCH_DIR}" >&2
+  exit 1
+fi
+
+if [[ ${#ZBLUE_PATCHES[@]} -eq 0 ]]; then
+  echo "[apply_patches] ERROR: no ZBlue .patch files found" >&2
+  exit 1
+fi
+
+if [[ ${#FRAMEWORK_PATCHES[@]} -eq 0 ]]; then
+  echo "[apply_patches] ERROR: no Bluetooth Framework .patch files found" >&2
   exit 1
 fi
 
@@ -66,11 +94,44 @@ if [[ "${MODE}" == "check" ]]; then
       echo "  checking ${b}: already applied (stamp)"
     else
       echo "  checking ${b}: not applied ..."
-      if ! git -C "${SIFLI_DIR}" apply --check --whitespace=nowarn \
+      if ! git -C "${SIFLI_DIR}" apply --check --unidiff-zero --whitespace=nowarn \
           "${PATCH_ARGS[@]}" "$p"; then
+        if git -C "${SIFLI_DIR}" apply --reverse --check --unidiff-zero --whitespace=nowarn \
+            "${PATCH_ARGS[@]}" "$p"; then
+          echo "  checking ${b}: already present in vendor tree"
+        else
+          echo "[apply_patches] ERROR: ${b} does NOT apply cleanly" >&2
+          exit 1
+        fi
+      fi
+    fi
+  done
+  for p in "${ZBLUE_PATCHES[@]}"; do
+    b="zblue/$(basename "$p")"
+    if [[ -f "${STAMP_FILE}" ]] && grep -Fxq "${b}" "${STAMP_FILE}"; then
+      echo "  checking ${b}: already applied (stamp)"
+    else
+      if git -C "${ZBLUE_DIR}" apply --check --whitespace=nowarn "$p"; then
+        :
+      elif git -C "${ZBLUE_DIR}" apply --reverse --check --whitespace=nowarn "$p"; then
+        echo "  checking ${b}: already present in ZBlue source"
+      else
         echo "[apply_patches] ERROR: ${b} does NOT apply cleanly" >&2
         exit 1
       fi
+    fi
+  done
+  for p in "${FRAMEWORK_PATCHES[@]}"; do
+    b="framework/$(basename "$p")"
+    if [[ -f "${STAMP_FILE}" ]] && grep -Fxq "${b}" "${STAMP_FILE}"; then
+      echo "  checking ${b}: already applied (stamp)"
+    elif git -C "${FRAMEWORK_DIR}" apply --check --unidiff-zero --whitespace=nowarn "$p"; then
+      :
+    elif git -C "${FRAMEWORK_DIR}" apply --reverse --check --unidiff-zero --whitespace=nowarn "$p"; then
+      echo "  checking ${b}: already present in Framework source"
+    else
+      echo "[apply_patches] ERROR: ${b} does NOT apply cleanly" >&2
+      exit 1
     fi
   done
   echo "[apply_patches] Patch state is consistent."
@@ -103,12 +164,13 @@ for p in "${PATCHES[@]}"; do
 done
 
 if [[ ${#TO_APPLY[@]} -eq 0 ]]; then
-  echo "[apply_patches] all patches already applied"
-  exit 0
+  echo "[apply_patches] all vendor/sifli patches already applied"
 fi
 
 # --- apply ---
-echo "[apply_patches] applying ${#TO_APPLY[@]} patch(es) to vendor/sifli..."
+if [[ ${#TO_APPLY[@]} -gt 0 ]]; then
+  echo "[apply_patches] applying ${#TO_APPLY[@]} patch(es) to vendor/sifli..."
+fi
 for p in "${TO_APPLY[@]}"; do
   b="$(basename "$p")"
   echo "  applying ${b} ..."
@@ -119,10 +181,48 @@ for p in "${TO_APPLY[@]}"; do
     PATCH_ARGS+=(--exclude=boards/sf32lb52/lckfb_huangshan_pi/src/CMakeLists.txt)
   fi
 
-  if git -C "${SIFLI_DIR}" apply --check --whitespace=nowarn "${PATCH_ARGS[@]}" "$p"; then
-    git -C "${SIFLI_DIR}" apply --whitespace=nowarn "${PATCH_ARGS[@]}" "$p"
-  elif git -C "${SIFLI_DIR}" apply --reverse --check --whitespace=nowarn "${PATCH_ARGS[@]}" "$p"; then
+  if git -C "${SIFLI_DIR}" apply --check --unidiff-zero --whitespace=nowarn "${PATCH_ARGS[@]}" "$p"; then
+    git -C "${SIFLI_DIR}" apply --unidiff-zero --whitespace=nowarn "${PATCH_ARGS[@]}" "$p"
+  elif git -C "${SIFLI_DIR}" apply --reverse --check --unidiff-zero --whitespace=nowarn "${PATCH_ARGS[@]}" "$p"; then
     echo "[apply_patches]   already present in vendor tree: ${b}"
+  else
+    echo "[apply_patches] ERROR: ${b} does not apply and is not already present" >&2
+    exit 1
+  fi
+  printf '%s\n' "${b}" >> "${STAMP_FILE}"
+done
+
+for p in "${ZBLUE_PATCHES[@]}"; do
+  b="zblue/$(basename "$p")"
+  if [[ -n "${APPLIED[$b]:-}" ]]; then
+    echo "[apply_patches]   already applied: ${b}"
+    continue
+  fi
+
+  echo "  applying ${b} ..."
+  if git -C "${ZBLUE_DIR}" apply --check --whitespace=nowarn "$p"; then
+    git -C "${ZBLUE_DIR}" apply --whitespace=nowarn "$p"
+  elif git -C "${ZBLUE_DIR}" apply --reverse --check --whitespace=nowarn "$p"; then
+    echo "[apply_patches]   already present in ZBlue source: ${b}"
+  else
+    echo "[apply_patches] ERROR: ${b} does not apply and is not already present" >&2
+    exit 1
+  fi
+  printf '%s\n' "${b}" >> "${STAMP_FILE}"
+done
+
+for p in "${FRAMEWORK_PATCHES[@]}"; do
+  b="framework/$(basename "$p")"
+  if [[ -n "${APPLIED[$b]:-}" ]]; then
+    echo "[apply_patches]   already applied: ${b}"
+    continue
+  fi
+
+  echo "[apply_patches] applying ${b} ..."
+  if git -C "${FRAMEWORK_DIR}" apply --check --unidiff-zero --whitespace=nowarn "$p"; then
+    git -C "${FRAMEWORK_DIR}" apply --unidiff-zero --whitespace=nowarn "$p"
+  elif git -C "${FRAMEWORK_DIR}" apply --reverse --check --unidiff-zero --whitespace=nowarn "$p"; then
+    echo "[apply_patches]   already present in Framework source: ${b}"
   else
     echo "[apply_patches] ERROR: ${b} does not apply and is not already present" >&2
     exit 1

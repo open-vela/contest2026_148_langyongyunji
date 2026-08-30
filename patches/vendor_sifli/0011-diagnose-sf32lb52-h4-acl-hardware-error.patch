@@ -1,0 +1,37 @@
+diff --git a/chips/sf32lb52/sf32lb52_bth4.c b/chips/sf32lb52/sf32lb52_bth4.c
+--- a/chips/sf32lb52/sf32lb52_bth4.c
++++ b/chips/sf32lb52/sf32lb52_bth4.c
+@@ -399,6 +399,12 @@ static int sf32lb52_bt_send(struct bt_driver_s *drv,
+     }
+ 
+   ret = sf32lb52_host_send_packet(hdr, len + drv->head_reserve);
++#if SF32LB52_BT_TRACE
++  syslog(LOG_INFO,
++         "sf32lb52 bth4 send result: type=%u len=%lu ret=%d\n",
++         (unsigned int)type,
++         (unsigned long)(len + drv->head_reserve), ret);
++#endif
+   if (ret < 0)
+     {
+       return ret;
+     }
+diff --git a/chips/sf32lb52/sf32lb52_bt_adapter.c b/chips/sf32lb52/sf32lb52_bt_adapter.c
+--- a/chips/sf32lb52/sf32lb52_bt_adapter.c
++++ b/chips/sf32lb52/sf32lb52_bt_adapter.c
+@@ -420,3 +420,16 @@ static void sf32lb52_bt_log_packet(const char *direction,
+       syslog(LOG_INFO, "\n");
+     }
++  else if (data[0] == 0x04 && len >= 4 && data[1] == 0x10)
++    {
++      size_t dump_len = len < 16 ? len : 16;
++      size_t i;
++
++      syslog(LOG_ERR, "sf32lb52 bt rx hardware error raw:");
++      for (i = 1; i < dump_len; i++)
++        {
++          syslog(LOG_ERR, " %02x", data[i]);
++        }
++
++      syslog(LOG_ERR, "\n");
++    }
+ }
