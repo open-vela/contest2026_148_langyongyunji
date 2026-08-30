@@ -660,6 +660,7 @@ static void vg_confirm_alert(void)
     }
 
   g_vg.state = VG_STATE_ALERTING;
+  vg_ble_set_fall_status(g_vg.active.type == VG_EVENT_FALL);
   g_vg.countdown = 0;
   g_vg.countdown_total = 0;
   g_vg.tick_accum_ms = 0;
@@ -755,11 +756,6 @@ static void vg_start_prealert(enum vg_event_type_e type, int countdown,
                               int risk, int confidence)
 {
   vg_prepare_event(type, risk, confidence, "suspected");
-  if (type == VG_EVENT_FALL)
-    {
-      vg_ble_set_fall_status(true);
-    }
-
   g_vg.state = VG_STATE_PREALERT;
   g_vg.countdown = countdown;
   g_vg.countdown_total = countdown;

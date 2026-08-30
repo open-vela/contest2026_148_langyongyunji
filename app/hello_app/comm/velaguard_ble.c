@@ -24,6 +24,7 @@
 #define VG_BLE_COMMAND_CALL_REQUEST 1
 #define VG_BLE_FLAG_USER_CONFIRMED  1
 #define VG_BLE_ADDR_TEXT_LEN        18
+#define VG_BLE_HEARTBEAT_MS         1000
 #define VG_BLE_TEST_NOTIFY_MS       1000
 #define VG_BLE_ADV_RETRY_SKIP       250
 
@@ -37,6 +38,8 @@ enum vg_ble_handle_e
   VG_BLE_HANDLE_EVENT,
   VG_BLE_HANDLE_EVENT_CCC,
   VG_BLE_HANDLE_TIME,
+  VG_BLE_HANDLE_STATUS,
+  VG_BLE_HANDLE_STATUS_CCC,
   VG_BLE_HANDLE_TEST,
   VG_BLE_HANDLE_TEST_CCC,
 };
@@ -47,6 +50,8 @@ static const bt_uuid_t g_vg_event_uuid =
   BT_UUID_DECLARE_128(VG_BLE_UUID_BYTES(0x02));
 static const bt_uuid_t g_vg_time_uuid =
   BT_UUID_DECLARE_128(VG_BLE_UUID_BYTES(0x03));
+static const bt_uuid_t g_vg_status_uuid =
+  BT_UUID_DECLARE_128(VG_BLE_UUID_BYTES(0x05));
 static const bt_uuid_t g_vg_test_uuid =
   BT_UUID_DECLARE_128(VG_BLE_UUID_BYTES(0x04));
 
@@ -58,6 +63,8 @@ static bt_address_t g_vg_peer_addr;
 static bool g_vg_peer_addr_valid;
 static bool g_vg_connected;
 static bool g_vg_notify_enabled;
+static volatile bool g_vg_status_notify_enabled;
+static volatile bool g_vg_fall_status_active;
 static bool g_vg_initialized;
 static bool g_vg_enabled;
 static bool g_vg_adapter_ready;
@@ -78,9 +85,11 @@ static char g_vg_local_addr[VG_BLE_ADDR_TEXT_LEN];
 static uint64_t g_vg_last_time_sync_ms;
 static uint64_t g_vg_pending_time_sync_ms;
 static uint64_t g_vg_last_test_notify_ms;
+static uint64_t g_vg_last_status_notify_ms;
 static uint32_t g_vg_test_counter;
 static uint8_t g_vg_last_test_value;
 static uint16_t g_vg_event_ccc_value;
+static uint16_t g_vg_status_ccc_value;
 static uint16_t g_vg_test_ccc_value;
 
 static uint64_t vg_ble_get_le64(const uint8_t *data)
@@ -194,6 +203,7 @@ static uint16_t vg_ble_attr_read(gatts_handle_t srv_handle,
                                  uint32_t req_handle)
 {
   uint8_t ccc_value[2];
+  uint8_t status_value;
   uint8_t *data = NULL;
   uint16_t len = 0;
 
@@ -207,6 +217,12 @@ static uint16_t vg_ble_attr_read(gatts_handle_t srv_handle,
       case VG_BLE_HANDLE_TIME:
         data = (uint8_t *)&g_vg_last_time_sync_ms;
         len = sizeof(g_vg_last_time_sync_ms);
+        break;
+
+      case VG_BLE_HANDLE_STATUS:
+        status_value = g_vg_fall_status_active ? 1 : 0;
+        data = &status_value;
+        len = sizeof(status_value);
         break;
 
       case VG_BLE_HANDLE_TEST:
@@ -286,6 +302,7 @@ static uint16_t vg_ble_attr_write(gatts_handle_t srv_handle,
         return length;
 
       case VG_BLE_HANDLE_EVENT_CCC:
+      case VG_BLE_HANDLE_STATUS_CCC:
       case VG_BLE_HANDLE_TEST_CCC:
         if (length < sizeof(ccc_value))
           {
@@ -299,6 +316,15 @@ static uint16_t vg_ble_attr_write(gatts_handle_t srv_handle,
             g_vg_notify_enabled = ccc_value == GATT_CCC_NOTIFY;
             printf("VelaGuard BLE: event CCC value=0x%04x notifications=%s\n",
                    ccc_value, g_vg_notify_enabled ? "enabled" : "disabled");
+          }
+        else if (attr_handle == VG_BLE_HANDLE_STATUS_CCC)
+          {
+            g_vg_status_ccc_value = ccc_value;
+            g_vg_status_notify_enabled = ccc_value == GATT_CCC_NOTIFY;
+            g_vg_last_status_notify_ms = 0;
+            printf("VelaGuard BLE: status CCC value=0x%04x notifications=%s\n",
+                   ccc_value,
+                   g_vg_status_notify_enabled ? "enabled" : "disabled");
           }
         else
           {
@@ -339,6 +365,14 @@ static gatt_attr_db_t g_vg_attrs[] =
                                  GATT_PERM_READ | GATT_PERM_WRITE,
                                  vg_ble_attr_read, vg_ble_attr_write,
                                  VG_BLE_HANDLE_TIME),
+  GATT_H_CHARACTERISTIC_USER_RSP(g_vg_status_uuid,
+                                 GATT_PROP_READ | GATT_PROP_NOTIFY,
+                                 GATT_PERM_READ,
+                                 vg_ble_attr_read, vg_ble_attr_write,
+                                 VG_BLE_HANDLE_STATUS),
+  GATT_H_CCCD_USER_RSP(GATT_PERM_READ | GATT_PERM_WRITE,
+                       vg_ble_attr_read, vg_ble_attr_write,
+                       VG_BLE_HANDLE_STATUS_CCC),
   GATT_H_CHARACTERISTIC_USER_RSP(g_vg_test_uuid,
                                  GATT_PROP_READ | GATT_PROP_WRITE |
                                  GATT_PROP_NOTIFY,
@@ -408,10 +442,13 @@ static void vg_ble_gatts_disconnected(gatts_handle_t srv_handle,
   g_vg_connected = false;
   g_vg_peer_addr_valid = false;
   g_vg_notify_enabled = false;
+  g_vg_status_notify_enabled = false;
   g_vg_test_notify_enabled = false;
   g_vg_test_probe_seen = false;
   g_vg_event_ccc_value = 0;
+  g_vg_status_ccc_value = 0;
   g_vg_test_ccc_value = 0;
+  g_vg_last_status_notify_ms = 0;
   g_vg_last_test_notify_ms = 0;
   g_vg_advertising = false;
   g_vg_adv_starting = false;
@@ -755,6 +792,27 @@ void vg_ble_process(void)
         }
     }
 
+  if (g_vg_connected && g_vg_status_notify_enabled &&
+      g_vg_peer_addr_valid && g_vg_service_registered)
+    {
+      uint64_t now_ms = vg_ble_monotonic_ms();
+
+      if (g_vg_last_status_notify_ms == 0 ||
+          now_ms - g_vg_last_status_notify_ms >= VG_BLE_HEARTBEAT_MS)
+        {
+          uint8_t status_value = g_vg_fall_status_active ? 1 : 0;
+          bt_status_t status;
+
+          status = bt_gatts_notify(g_vg_gatts, &g_vg_peer_addr,
+                                   VG_BLE_HANDLE_STATUS, &status_value,
+                                   sizeof(status_value));
+          ret = vg_ble_status_to_errno(status);
+          g_vg_last_status_notify_ms = now_ms;
+          printf("VelaGuard BLE: STATUS heartbeat value=%u result=%d status=%d\n",
+                 status_value, ret, status);
+        }
+    }
+
   if (g_vg_connected && g_vg_test_notify_enabled && g_vg_test_probe_seen &&
       g_vg_peer_addr_valid && g_vg_service_registered)
     {
@@ -830,7 +888,7 @@ void vg_ble_process_time(void)
 
 void vg_ble_set_fall_status(bool active)
 {
-  UNUSED(active);
+  g_vg_fall_status_active = active;
 }
 
 bool vg_ble_is_connected(void)
