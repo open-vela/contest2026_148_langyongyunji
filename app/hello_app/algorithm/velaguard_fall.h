@@ -75,6 +75,4 @@ int vg_fall_gyro_sum_dps(const struct vg_fall_sample_s *sample);
 bool vg_fall_process(struct vg_fall_detector_s *detector,
                      const struct vg_fall_sample_s *sample,
                      struct vg_fall_result_s *result);
-bool vg_fall_run_demo(struct vg_fall_result_s *result);
-
 #endif

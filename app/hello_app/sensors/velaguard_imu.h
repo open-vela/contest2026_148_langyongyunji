@@ -62,9 +62,6 @@ void vg_imu_close(struct vg_imu_s *imu);
 int vg_imu_read(struct vg_imu_s *imu, struct vg_imu_sample_s *sample);
 int vg_imu_read_guarded(struct vg_imu_s *imu,
                         struct vg_imu_sample_s *sample);
-int vg_imu_scan(void);
-int vg_imu_selftest(const char *devpath, int nsamples);
-int vg_imu_fall_watch(const char *devpath, int seconds);
 int vg_imu_guard_start(const char *devpath, int priority, int stacksize);
 void vg_imu_guard_set_enabled(bool enabled);
 void vg_imu_guard_get_status(struct vg_imu_guard_status_s *status);

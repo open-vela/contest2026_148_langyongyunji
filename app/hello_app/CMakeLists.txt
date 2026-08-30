@@ -8,6 +8,16 @@
 set(CONTEST2026_148_BOARD_DIR
     ${NUTTX_DIR}/../vendor/openvela/boards/contest2026_148_board)
 
+set(CONTEST2026_148_BT_DEP)
+if(CONFIG_BLUETOOTH)
+  set(CONTEST2026_148_BT_DEP libbluetooth)
+elseif(CONFIG_BT)
+  # The legacy VelaGuard BLE adapter calls the ZBlue host directly.  When the
+  # Framework module is disabled, link the host library explicitly so this
+  # application uses ZBlue's native H4 transport.
+  set(CONTEST2026_148_BT_DEP zblue)
+endif()
+
 file(GLOB VELAGUARD_UI_SRCS
      ui/velaguard_font_30.c
      ui/velaguard_img_*.c)
@@ -50,6 +60,7 @@ if(CONFIG_LVX_USE_DEMO_CONTEST2026_148_VELAGUARD)
     ${CONFIG_LVX_USE_DEMO_CONTEST2026_148_VELAGUARD}
     DEPENDS
     lvgl
+    ${CONTEST2026_148_BT_DEP}
     ${CONTEST2026_148_DENOISE_DEP}
     DEFINITIONS
     SOC_BF0_HCPU
@@ -64,20 +75,8 @@ if(CONFIG_LVX_USE_DEMO_CONTEST2026_148_VELAGUARD)
     ${NUTTX_DIR}/../vendor/sifli/chips/sf32lb52
     ${NUTTX_DIR}/../vendor/sifli/chips/sf32lb52/include
     ${NUTTX_DIR}/../vendor/sifli/chips/boards/include
-    ${NUTTX_DIR}/../apps/external/zblue/zblue/port/include
-    ${NUTTX_DIR}/../apps/external/zblue/zblue/port/kernel/include
-    ${CMAKE_BINARY_DIR}/apps/external/zblue/include
-    ${CMAKE_BINARY_DIR}/apps/external/zblue/include/zephyr/sys
-    ${CMAKE_BINARY_DIR}/apps/external/zblue/include/zephyr/kernel
-    ${CMAKE_BINARY_DIR}/apps/external/zblue/include/zephyr/arch
-    ${CMAKE_BINARY_DIR}/apps/external/zblue/include/zephyr/linker
-    ${CMAKE_BINARY_DIR}/apps/external/zblue/include/zephyr/devicetree
-    ${CMAKE_BINARY_DIR}/apps/external/zblue/include/zephyr/debug
-    ${CMAKE_BINARY_DIR}/apps/external/zblue/include/zephyr/fs
-    ${CMAKE_BINARY_DIR}/apps/external/zblue/include/zephyr/shell
-    ${CMAKE_BINARY_DIR}/apps/external/zblue/include/zephyr/tracing
-    ${CMAKE_BINARY_DIR}/apps/external/zblue/include/zephyr/app_memory
-    ${NUTTX_DIR}/../apps/external/zblue/zblue/include
+    ${NUTTX_DIR}/../frameworks/connectivity/bluetooth/framework/include
+    ${NUTTX_DIR}/../apps/system/libuv/libuv/include
     ${NUTTX_DIR}/arch/arm/src/common
     ${NUTTX_DIR}/arch/arm/src/armv8-m
     ${NUTTX_DIR}/arch/arm/src/arm_m
@@ -99,6 +98,10 @@ if(CONFIG_LVX_USE_DEMO_CONTEST2026_148_VELAGUARD)
     comm/velaguard_ble.c
     ${NUTTX_DIR}/../apps/external/zblue/zblue/port/drivers/bluetooth/hci/h4.c
     ${VELAGUARD_UI_SRCS})
+
+  if(CONFIG_BT)
+    target_link_libraries(apps_velaguard PRIVATE zblue::headers)
+  endif()
 
   if(CONFIG_CONTEST2026_148_AUDIO_TEST)
     nuttx_add_application(

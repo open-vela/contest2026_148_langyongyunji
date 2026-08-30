@@ -16,6 +16,13 @@ menuconfig LVX_USE_DEMO_CONTEST2026_148_VELAGUARD
 
 if LVX_USE_DEMO_CONTEST2026_148_VELAGUARD
 
+config CONTEST2026_148_VELAGUARD_HEADLESS
+	bool "Run VelaGuard without LVGL UI"
+	default n
+	---help---
+		Keep the BLE and audio workers running without initializing the
+		LVGL display. This is intended for isolating BLE startup issues.
+
 config CONTEST2026_148_VELAGUARD_PRIORITY
 	int "VelaGuard task priority"
 	default 100

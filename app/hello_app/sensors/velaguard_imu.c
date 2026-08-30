@@ -1,7 +1,7 @@
 /****************************************************************************
  * contest2026_148_langyongyunji/app/hello_app/sensors/velaguard_imu.c
  *
- * Minimal LSM6DS3TR-C reader for Huangshan Pi.
+ * Minimal LSM6DSL reader for Huangshan Pi.
  *
  ****************************************************************************/
 
@@ -13,9 +13,6 @@
 
 #include "velaguard_fall.h"
 
-#include "bf0_hal_pinmux.h"
-
-#include <nuttx/i2c/i2c_master.h>
 #include <nuttx/sched.h>
 #include <nuttx/sensors/lsm6dsl.h>
 
@@ -31,34 +28,39 @@
 #include <unistd.h>
 
 /****************************************************************************
+ * Fallback Types
+ ****************************************************************************/
+
+/* Some build outputs do not export CONFIG_SENSORS_LSM6DSL into the generated
+ * config header even though the board defconfig enables it. Keep the ioctl
+ * payload layout local so the app still compiles against the sensor driver ABI.
+ */
+
+#ifndef CONFIG_SENSORS_LSM6DSL
+struct lsm6dsl_sensor_data_s
+{
+  int16_t  x_data;
+  int16_t  y_data;
+  int16_t  z_data;
+  uint16_t temperature;
+  int16_t  g_x_data;
+  int16_t  g_y_data;
+  int16_t  g_z_data;
+  uint16_t timestamp;
+};
+#endif
+
+/****************************************************************************
  * Pre-processor Definitions
  ****************************************************************************/
 
-#define VG_IMU_I2C_FREQ       400000
 #define LSM6DS3_ADDR_LOW      0x6a
-#define LSM6DS3_ADDR_HIGH     0x6b
-#define LSM6DS3_WHO_AM_I      0x0f
-#define LSM6DS3_WHO_AM_I_VAL  0x69
 #define LSM6DSL_WHO_AM_I_VAL  0x6a
-#define LSM6DS3_FIFO_CTRL1    0x06
-#define LSM6DS3_FIFO_CTRL2    0x07
-#define LSM6DS3_FIFO_CTRL3    0x08
-#define LSM6DS3_FIFO_CTRL5    0x0a
-#define LSM6DS3_CTRL1_XL      0x10
-#define LSM6DS3_CTRL2_G       0x11
-#define LSM6DS3_CTRL3_C       0x12
-#define LSM6DS3_OUTX_L_G      0x22
-#define LSM6DS3_FIFO_STATUS1  0x3a
-#define LSM6DS3_FIFO_DATA_OUT 0x3e
 
-#define VG_IMU_FALL_PERIOD_MS 100
-#define VG_IMU_GUARD_SAMPLE_US 200000
-#define VG_IMU_FIFO_SAMPLE_MS  10
-#define VG_IMU_FIFO_WORDS_PER_SAMPLE 6
-#define VG_IMU_FIFO_BYTES_PER_SAMPLE 12
-#define VG_IMU_FIFO_MAX_SAMPLES 24
-#define VG_IMU_PIN_SETTLE_US  500
-#define VG_IMU_GUARD_DEVPATH_MAX 32
+#define VG_IMU_FALL_PERIOD_MS       100
+#define VG_IMU_GUARD_SAMPLE_US      200000
+#define VG_IMU_FIFO_MAX_SAMPLES     24
+#define VG_IMU_GUARD_DEVPATH_MAX    32
 
 #ifndef CONFIG_CONTEST2026_148_VELAGUARD_IMU_DEVPATH
 #  define CONFIG_CONTEST2026_148_VELAGUARD_IMU_DEVPATH "/dev/lsm6dsl0"
@@ -68,40 +70,19 @@
  * Private Function Prototypes
  ****************************************************************************/
 
-extern void BSP_GPIO_Set(int pin, int val, int is_porta);
-extern void BSP_PIN_Touch(void);
-
 static int vg_imu_read_fifo_guarded(struct vg_imu_s *imu,
                                     struct vg_imu_sample_s *samples,
                                     int max_samples);
+int vg_imu_open(struct vg_imu_s *imu, const char *devpath);
+int vg_imu_open_guarded(struct vg_imu_s *imu, const char *devpath);
+void vg_imu_close(struct vg_imu_s *imu);
+int vg_imu_read(struct vg_imu_s *imu, struct vg_imu_sample_s *sample);
+int vg_imu_read_guarded(struct vg_imu_s *imu,
+                        struct vg_imu_sample_s *sample);
 
-#ifdef CONFIG_CONTEST2026_148_VELAGUARD_IMU_LEGACY_I2C
-static pthread_mutex_t g_sf32lb52_i2c1_mux_lock = PTHREAD_MUTEX_INITIALIZER;
-
-int sf32lb52_i2c1_mux_lock(void)
-{
-  return pthread_mutex_lock(&g_sf32lb52_i2c1_mux_lock);
-}
-
-int sf32lb52_i2c1_mux_unlock(void)
-{
-  return pthread_mutex_unlock(&g_sf32lb52_i2c1_mux_lock);
-}
-#else
-int sf32lb52_i2c1_mux_lock(void)
-{
-  /* No-op: the G-SENSOR is on a dedicated I2C3 bus, so there is no
-   * shared-I2C1 contention with the touch controller anymore.
-   */
-
-  return 0;
-}
-
-int sf32lb52_i2c1_mux_unlock(void)
-{
-  return 0;
-}
-#endif
+/****************************************************************************
+ * Private Data
+ ****************************************************************************/
 
 struct vg_imu_guard_s
 {
@@ -116,6 +97,10 @@ struct vg_imu_guard_s
 
 static struct vg_imu_guard_s g_vg_imu_guard;
 static pthread_mutex_t g_vg_imu_guard_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/****************************************************************************
+ * Private Functions
+ ****************************************************************************/
 
 static void vg_imu_guard_lock(void)
 {
@@ -146,10 +131,6 @@ static bool vg_imu_guard_has_pending_result(void)
   vg_imu_guard_unlock();
   return pending;
 }
-
-/****************************************************************************
- * Private Functions
- ****************************************************************************/
 
 static uint32_t vg_imu_uptime_ms(void)
 {
@@ -376,238 +357,37 @@ static int vg_imu_guard_task(int argc, char *argv[])
   return 0;
 }
 
-#ifdef CONFIG_CONTEST2026_148_VELAGUARD_IMU_LEGACY_I2C
-static void vg_imu_select_pins(void)
-{
-  /* Huangshan Pi shares I2C1 controller between touch and IMU pin groups.
-   * Select the IMU group only while doing explicit IMU access.
-   */
-
-  BSP_GPIO_Set(30, 1, 1);
-  usleep(VG_IMU_PIN_SETTLE_US);
-  HAL_PIN_Set(PAD_PA40, I2C1_SCL, PIN_PULLUP, 1);
-  HAL_PIN_Set(PAD_PA39, I2C1_SDA, PIN_PULLUP, 1);
-  usleep(VG_IMU_PIN_SETTLE_US);
-}
-
-static void vg_imu_restore_touch_pins(void)
-{
-  BSP_PIN_Touch();
-  usleep(VG_IMU_PIN_SETTLE_US);
-}
-#else
-static void vg_imu_select_pins(void)
-{
-  /* No-op: the G-SENSOR is wired to a dedicated I2C3 bus, so there is no
-   * pin mux to switch.  Kept so higher-level callers stay unchanged.
-   */
-}
-
-static void vg_imu_restore_touch_pins(void)
-{
-  /* No-op. */
-}
-#endif
-
-#ifdef CONFIG_CONTEST2026_148_VELAGUARD_IMU_LEGACY_I2C
-static int16_t vg_i16_le(const uint8_t *data)
-{
-  return (int16_t)((uint16_t)data[0] | ((uint16_t)data[1] << 8));
-}
-
-static int vg_i2c_transfer(int fd, struct i2c_msg_s *msgs, int msgc)
-{
-  struct i2c_transfer_s transfer;
-
-  memset(&transfer, 0, sizeof(transfer));
-  transfer.msgv = msgs;
-  transfer.msgc = msgc;
-
-  return ioctl(fd, I2CIOC_TRANSFER, (unsigned long)(uintptr_t)&transfer);
-}
-
-static int vg_imu_read_reg(int fd, uint8_t addr, uint8_t reg,
-                           uint8_t *buffer, uint16_t length)
-{
-  struct i2c_msg_s msgs[2];
-  int ret;
-
-  memset(msgs, 0, sizeof(msgs));
-
-  msgs[0].frequency = VG_IMU_I2C_FREQ;
-  msgs[0].addr      = addr;
-  msgs[0].flags     = I2C_M_NOSTOP;
-  msgs[0].buffer    = &reg;
-  msgs[0].length    = 1;
-
-  msgs[1].frequency = VG_IMU_I2C_FREQ;
-  msgs[1].addr      = addr;
-  msgs[1].flags     = I2C_M_READ | I2C_M_NOSTART;
-  msgs[1].buffer    = buffer;
-  msgs[1].length    = length;
-
-  ret = vg_i2c_transfer(fd, msgs, 2);
-  return ret < 0 ? ret : 0;
-}
-
-static int vg_imu_write_reg(int fd, uint8_t addr, uint8_t reg, uint8_t value)
-{
-  struct i2c_msg_s msg;
-  uint8_t data[2];
-  int ret;
-
-  data[0] = reg;
-  data[1] = value;
-
-  memset(&msg, 0, sizeof(msg));
-  msg.frequency = VG_IMU_I2C_FREQ;
-  msg.addr      = addr;
-  msg.flags     = 0;
-  msg.buffer    = data;
-  msg.length    = sizeof(data);
-
-  ret = vg_i2c_transfer(fd, &msg, 1);
-  return ret < 0 ? ret : 0;
-}
-
-static int vg_imu_probe_addr(int fd, uint8_t addr, uint8_t *whoami)
+static int vg_imu_read_fifo_guarded(struct vg_imu_s *imu,
+                                    struct vg_imu_sample_s *samples,
+                                    int max_samples)
 {
   int ret;
 
-  ret = vg_imu_read_reg(fd, addr, LSM6DS3_WHO_AM_I, whoami, 1);
+  if (max_samples <= 0)
+    {
+      return -EINVAL;
+    }
+
+  ret = vg_imu_read(imu, &samples[0]);
   if (ret < 0)
     {
       return ret;
     }
 
-  if (*whoami == LSM6DS3_WHO_AM_I_VAL ||
-      *whoami == LSM6DSL_WHO_AM_I_VAL)
-    {
-      return 0;
-    }
-
-  return -ENODEV;
+  return 1;
 }
 
-static int vg_imu_configure(struct vg_imu_s *imu)
+static void vg_imu_guard_set_started(bool started)
 {
-  int ret;
-
-  ret = vg_imu_write_reg(imu->fd, imu->addr, LSM6DS3_FIFO_CTRL5, 0x00);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  /* BDU + auto-increment register address. */
-
-  ret = vg_imu_write_reg(imu->fd, imu->addr, LSM6DS3_CTRL3_C, 0x44);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  /* Accelerometer: 104 Hz, +-8 g. The guard task samples every 100 ms to
-   * reduce contention with the FT6146 touch controller on the shared I2C1
-   * pinmux.
-   */
-
-  ret = vg_imu_write_reg(imu->fd, imu->addr, LSM6DS3_CTRL1_XL, 0x4c);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  /* Gyroscope: 104 Hz, 2000 dps. */
-
-  ret = vg_imu_write_reg(imu->fd, imu->addr, LSM6DS3_CTRL2_G, 0x4c);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  ret = vg_imu_write_reg(imu->fd, imu->addr, LSM6DS3_FIFO_CTRL1, 0x00);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  ret = vg_imu_write_reg(imu->fd, imu->addr, LSM6DS3_FIFO_CTRL2, 0x00);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  /* Batch accelerometer and gyroscope at the sensor ODR, then let the guard
-   * task drain FIFO in short windows so touch keeps ownership of I2C1 most of
-   * the time.
-   */
-
-  ret = vg_imu_write_reg(imu->fd, imu->addr, LSM6DS3_FIFO_CTRL3, 0x09);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  ret = vg_imu_write_reg(imu->fd, imu->addr, LSM6DS3_FIFO_CTRL5, 0x26);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  usleep(30000);
-  return 0;
+  vg_imu_guard_lock();
+  g_vg_imu_guard.started = started;
+  vg_imu_guard_unlock();
 }
-#endif /* CONFIG_CONTEST2026_148_VELAGUARD_IMU_LEGACY_I2C */
 
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
 
-#ifdef CONFIG_CONTEST2026_148_VELAGUARD_IMU_LEGACY_I2C
-int vg_imu_open(struct vg_imu_s *imu, const char *devpath)
-{
-  static const uint8_t addrs[] =
-  {
-    LSM6DS3_ADDR_LOW,
-    LSM6DS3_ADDR_HIGH,
-  };
-
-  uint8_t whoami;
-  int i;
-  int ret;
-
-  memset(imu, 0, sizeof(*imu));
-  imu->fd = -1;
-
-  imu->fd = open(devpath, O_RDWR | O_CLOEXEC);
-  if (imu->fd < 0)
-    {
-      return -errno;
-    }
-
-  for (i = 0; i < (int)(sizeof(addrs) / sizeof(addrs[0])); i++)
-    {
-      ret = vg_imu_probe_addr(imu->fd, addrs[i], &whoami);
-      if (ret == 0)
-        {
-          imu->addr = addrs[i];
-          imu->whoami = whoami;
-          ret = vg_imu_configure(imu);
-          if (ret < 0)
-            {
-              vg_imu_close(imu);
-              return ret;
-            }
-
-          return 0;
-        }
-    }
-
-  vg_imu_close(imu);
-  return -ENODEV;
-}
-#else
 int vg_imu_open(struct vg_imu_s *imu, const char *devpath)
 {
   int ret;
@@ -622,9 +402,9 @@ int vg_imu_open(struct vg_imu_s *imu, const char *devpath)
     }
 
   /* The kernel LSM6DSL driver is already bound to the sensor's fixed I2C
-   * address (0x6a/0x6b).  The driver only validates WHO_AM_I at register
-   * time, so it must be explicitly started (SNIOC_START sets the accel and
-   * gyro ODR) before the first sensor read; otherwise the sensor stays in
+   * address (0x6a).  The driver only validates WHO_AM_I at register time,
+   * so it must be explicitly started (SNIOC_START sets the accel and gyro
+   * ODR) before the first sensor read; otherwise the sensor stays in
    * power-down and every read returns zeros.
    */
 
@@ -636,12 +416,58 @@ int vg_imu_open(struct vg_imu_s *imu, const char *devpath)
       return ret;
     }
 
-  imu->addr   = LSM6DS3_ADDR_LOW;
+  imu->addr = LSM6DS3_ADDR_LOW;
   imu->whoami = LSM6DSL_WHO_AM_I_VAL;
 
   return 0;
 }
-#endif /* CONFIG_CONTEST2026_148_VELAGUARD_IMU_LEGACY_I2C */
+
+int vg_imu_open_guarded(struct vg_imu_s *imu, const char *devpath)
+{
+  return vg_imu_open(imu, devpath);
+}
+
+void vg_imu_close(struct vg_imu_s *imu)
+{
+  if (imu->fd >= 0)
+    {
+      close(imu->fd);
+      imu->fd = -1;
+    }
+}
+
+int vg_imu_read(struct vg_imu_s *imu, struct vg_imu_sample_s *sample)
+{
+  struct lsm6dsl_sensor_data_s data;
+  int ret;
+
+  /* The kernel driver returns one sample per ioctl: acceleration in mg
+   * and angular rate in mdps (milli-degrees per second).
+   */
+
+  ret = ioctl(imu->fd, SNIOC_LSM6DSLSENSORREAD,
+              (unsigned long)(uintptr_t)&data);
+  if (ret < 0)
+    {
+      return -errno;
+    }
+
+  sample->timestamp_ms = vg_imu_uptime_ms();
+  sample->ax_mg = data.x_data;
+  sample->ay_mg = data.y_data;
+  sample->az_mg = data.z_data;
+  sample->gx_dps = (data.g_x_data + (data.g_x_data >= 0 ? 500 : -500)) / 1000;
+  sample->gy_dps = (data.g_y_data + (data.g_y_data >= 0 ? 500 : -500)) / 1000;
+  sample->gz_dps = (data.g_z_data + (data.g_z_data >= 0 ? 500 : -500)) / 1000;
+
+  return 0;
+}
+
+int vg_imu_read_guarded(struct vg_imu_s *imu,
+                        struct vg_imu_sample_s *sample)
+{
+  return vg_imu_read(imu, sample);
+}
 
 int vg_imu_guard_start(const char *devpath, int priority, int stacksize)
 {
@@ -670,9 +496,7 @@ int vg_imu_guard_start(const char *devpath, int priority, int stacksize)
   pid = task_create("vg_imu", priority, stacksize, vg_imu_guard_task, NULL);
   if (pid < 0)
     {
-      vg_imu_guard_lock();
-      g_vg_imu_guard.started = false;
-      vg_imu_guard_unlock();
+      vg_imu_guard_set_started(false);
       return pid;
     }
 
@@ -719,227 +543,6 @@ bool vg_imu_guard_take_fall_result(struct vg_fall_result_s *result)
   return have_result;
 }
 
-int vg_imu_open_guarded(struct vg_imu_s *imu, const char *devpath)
-{
-  int ret;
-
-  ret = sf32lb52_i2c1_mux_lock();
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  vg_imu_select_pins();
-  ret = vg_imu_open(imu, devpath);
-  vg_imu_restore_touch_pins();
-  sf32lb52_i2c1_mux_unlock();
-  return ret;
-}
-
-void vg_imu_close(struct vg_imu_s *imu)
-{
-  if (imu->fd >= 0)
-    {
-      close(imu->fd);
-      imu->fd = -1;
-    }
-}
-
-#ifdef CONFIG_CONTEST2026_148_VELAGUARD_IMU_LEGACY_I2C
-static void vg_imu_decode_sample(const uint8_t *data, uint32_t timestamp_ms,
-                                 struct vg_imu_sample_s *sample)
-{
-  int16_t gx;
-  int16_t gy;
-  int16_t gz;
-  int16_t ax;
-  int16_t ay;
-  int16_t az;
-
-  gx = vg_i16_le(&data[0]);
-  gy = vg_i16_le(&data[2]);
-  gz = vg_i16_le(&data[4]);
-  ax = vg_i16_le(&data[6]);
-  ay = vg_i16_le(&data[8]);
-  az = vg_i16_le(&data[10]);
-
-  sample->timestamp_ms = timestamp_ms;
-  sample->ax_mg = ((int32_t)ax * 244 + (ax >= 0 ? 500 : -500)) / 1000;
-  sample->ay_mg = ((int32_t)ay * 244 + (ay >= 0 ? 500 : -500)) / 1000;
-  sample->az_mg = ((int32_t)az * 244 + (az >= 0 ? 500 : -500)) / 1000;
-  sample->gx_dps = ((int32_t)gx * 70 + (gx >= 0 ? 500 : -500)) / 1000;
-  sample->gy_dps = ((int32_t)gy * 70 + (gy >= 0 ? 500 : -500)) / 1000;
-  sample->gz_dps = ((int32_t)gz * 70 + (gz >= 0 ? 500 : -500)) / 1000;
-}
-#endif /* CONFIG_CONTEST2026_148_VELAGUARD_IMU_LEGACY_I2C */
-
-#ifdef CONFIG_CONTEST2026_148_VELAGUARD_IMU_LEGACY_I2C
-int vg_imu_read(struct vg_imu_s *imu, struct vg_imu_sample_s *sample)
-{
-  uint8_t data[VG_IMU_FIFO_BYTES_PER_SAMPLE];
-  int ret;
-
-  ret = vg_imu_read_reg(imu->fd, imu->addr, LSM6DS3_OUTX_L_G,
-                        data, sizeof(data));
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  vg_imu_decode_sample(data, vg_imu_uptime_ms(), sample);
-
-  return 0;
-}
-#else
-int vg_imu_read(struct vg_imu_s *imu, struct vg_imu_sample_s *sample)
-{
-  struct lsm6dsl_sensor_data_s data;
-  int ret;
-
-  /* The kernel driver returns one sample per ioctl: acceleration in mg
-   * and angular rate in mdps (milli-degrees per second).
-   */
-
-  ret = ioctl(imu->fd, SNIOC_LSM6DSLSENSORREAD,
-              (unsigned long)(uintptr_t)&data);
-  if (ret < 0)
-    {
-      return -errno;
-    }
-
-  sample->timestamp_ms = vg_imu_uptime_ms();
-  sample->ax_mg = data.x_data;
-  sample->ay_mg = data.y_data;
-  sample->az_mg = data.z_data;
-  sample->gx_dps = (data.g_x_data + (data.g_x_data >= 0 ? 500 : -500)) / 1000;
-  sample->gy_dps = (data.g_y_data + (data.g_y_data >= 0 ? 500 : -500)) / 1000;
-  sample->gz_dps = (data.g_z_data + (data.g_z_data >= 0 ? 500 : -500)) / 1000;
-
-  return 0;
-}
-#endif /* CONFIG_CONTEST2026_148_VELAGUARD_IMU_LEGACY_I2C */
-
-#ifdef CONFIG_CONTEST2026_148_VELAGUARD_IMU_LEGACY_I2C
-static int vg_imu_read_fifo(struct vg_imu_s *imu,
-                            struct vg_imu_sample_s *samples,
-                            int max_samples)
-{
-  uint8_t status[2];
-  uint8_t data[VG_IMU_FIFO_BYTES_PER_SAMPLE];
-  uint8_t word[2];
-  uint32_t now_ms;
-  int words;
-  int nsamples;
-  int i;
-  int j;
-  int ret;
-
-  if (max_samples > VG_IMU_FIFO_MAX_SAMPLES)
-    {
-      max_samples = VG_IMU_FIFO_MAX_SAMPLES;
-    }
-
-  ret = vg_imu_read_reg(imu->fd, imu->addr, LSM6DS3_FIFO_STATUS1,
-                        status, sizeof(status));
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  words = status[0] | ((status[1] & 0x0f) << 8);
-  nsamples = words / VG_IMU_FIFO_WORDS_PER_SAMPLE;
-  if (nsamples <= 0)
-    {
-      return 0;
-    }
-
-  if (nsamples > max_samples)
-    {
-      nsamples = max_samples;
-    }
-
-  now_ms = vg_imu_uptime_ms();
-  for (i = 0; i < nsamples; i++)
-    {
-      uint32_t ts = now_ms -
-        (uint32_t)(nsamples - i - 1) * VG_IMU_FIFO_SAMPLE_MS;
-
-      for (j = 0; j < VG_IMU_FIFO_WORDS_PER_SAMPLE; j++)
-        {
-          ret = vg_imu_read_reg(imu->fd, imu->addr, LSM6DS3_FIFO_DATA_OUT,
-                                word, sizeof(word));
-          if (ret < 0)
-            {
-              return ret;
-            }
-
-          data[j * 2] = word[0];
-          data[j * 2 + 1] = word[1];
-        }
-
-      vg_imu_decode_sample(data, ts, &samples[i]);
-    }
-
-  return nsamples;
-}
-
-static int vg_imu_read_fifo_guarded(struct vg_imu_s *imu,
-                                    struct vg_imu_sample_s *samples,
-                                    int max_samples)
-{
-  int ret;
-
-  ret = sf32lb52_i2c1_mux_lock();
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  vg_imu_select_pins();
-  ret = vg_imu_read_fifo(imu, samples, max_samples);
-  vg_imu_restore_touch_pins();
-  sf32lb52_i2c1_mux_unlock();
-  return ret;
-}
-#else
-static int vg_imu_read_fifo_guarded(struct vg_imu_s *imu,
-                                    struct vg_imu_sample_s *samples,
-                                    int max_samples)
-{
-  int ret;
-
-  /* On the dedicated I2C3 bus there is no pin-mux contention to batch
-   * around, so simply read one fresh sample per call.
-   */
-
-  ret = vg_imu_read_guarded(imu, &samples[0]);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  return 1;
-}
-#endif /* CONFIG_CONTEST2026_148_VELAGUARD_IMU_LEGACY_I2C */
-
-int vg_imu_read_guarded(struct vg_imu_s *imu,
-                        struct vg_imu_sample_s *sample)
-{
-  int ret;
-
-  ret = sf32lb52_i2c1_mux_lock();
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  vg_imu_select_pins();
-  ret = vg_imu_read(imu, sample);
-  vg_imu_restore_touch_pins();
-  sf32lb52_i2c1_mux_unlock();
-  return ret;
-}
-
 int vg_imu_selftest(const char *devpath, int nsamples)
 {
   struct vg_imu_s imu;
@@ -947,16 +550,10 @@ int vg_imu_selftest(const char *devpath, int nsamples)
   int i;
   int ret;
 
-#ifdef CONFIG_CONTEST2026_148_VELAGUARD_IMU_LEGACY_I2C
-  printf("VelaGuard IMU: switch I2C1 pins to IMU SCL=PA40 SDA=PA39 PWR=PA30\n");
-#endif
-  vg_imu_select_pins();
-
   ret = vg_imu_open(&imu, devpath);
   if (ret < 0)
     {
       printf("VelaGuard IMU: open/probe %s failed: %d\n", devpath, ret);
-      vg_imu_restore_touch_pins();
       return ret;
     }
 
@@ -982,7 +579,6 @@ int vg_imu_selftest(const char *devpath, int nsamples)
     }
 
   vg_imu_close(&imu);
-  vg_imu_restore_touch_pins();
   return ret < 0 ? ret : 0;
 }
 
@@ -1010,16 +606,11 @@ int vg_imu_fall_watch(const char *devpath, int seconds)
   printf("VelaGuard Fall: watching real IMU for %d seconds, sample=%dms\n",
          seconds, VG_IMU_FALL_PERIOD_MS);
   printf("VelaGuard Fall: actions: keep still 2s, simulate fall on soft pad, then keep still 5s\n");
-#ifdef CONFIG_CONTEST2026_148_VELAGUARD_IMU_LEGACY_I2C
-  printf("VelaGuard IMU: switch I2C1 pins to IMU SCL=PA40 SDA=PA39 PWR=PA30\n");
-#endif
-  vg_imu_select_pins();
 
   ret = vg_imu_open(&imu, devpath);
   if (ret < 0)
     {
       printf("VelaGuard Fall: open/probe %s failed: %d\n", devpath, ret);
-      vg_imu_restore_touch_pins();
       return ret;
     }
 
@@ -1091,73 +682,9 @@ int vg_imu_fall_watch(const char *devpath, int seconds)
     }
 
   vg_imu_close(&imu);
-  vg_imu_restore_touch_pins();
-
   return ret < 0 ? ret : 0;
 }
 
-#ifdef CONFIG_CONTEST2026_148_VELAGUARD_IMU_LEGACY_I2C
-int vg_imu_scan(void)
-{
-  static const char *devpaths[] =
-  {
-    "/dev/i2c0",
-    "/dev/i2c1",
-  };
-  static const uint8_t addrs[] =
-  {
-    LSM6DS3_ADDR_LOW,
-    LSM6DS3_ADDR_HIGH,
-  };
-
-  uint8_t whoami;
-  bool found = false;
-  int fd;
-  int i;
-  int j;
-  int ret;
-
-  printf("VelaGuard IMU: switch I2C1 pins to IMU SCL=PA40 SDA=PA39 PWR=PA30\n");
-  vg_imu_select_pins();
-
-  for (i = 0; i < (int)(sizeof(devpaths) / sizeof(devpaths[0])); i++)
-    {
-      fd = open(devpaths[i], O_RDWR | O_CLOEXEC);
-      if (fd < 0)
-        {
-          printf("VelaGuard IMU: %s open failed: %d\n",
-                 devpaths[i], -errno);
-          continue;
-        }
-
-      for (j = 0; j < (int)(sizeof(addrs) / sizeof(addrs[0])); j++)
-        {
-          whoami = 0xff;
-          ret = vg_imu_read_reg(fd, addrs[j], LSM6DS3_WHO_AM_I,
-                                &whoami, 1);
-          if (ret < 0)
-            {
-              printf("VelaGuard IMU: %s addr=0x%02x WHO_AM_I read failed: %d\n",
-                     devpaths[i], addrs[j], ret);
-            }
-          else
-            {
-              printf("VelaGuard IMU: %s addr=0x%02x WHO_AM_I=0x%02x%s\n",
-                     devpaths[i], addrs[j], whoami,
-                     (whoami == LSM6DS3_WHO_AM_I_VAL ||
-                      whoami == LSM6DSL_WHO_AM_I_VAL) ? " OK" : "");
-              found = found || whoami == LSM6DS3_WHO_AM_I_VAL ||
-                      whoami == LSM6DSL_WHO_AM_I_VAL;
-            }
-        }
-
-      close(fd);
-    }
-
-  vg_imu_restore_touch_pins();
-  return found ? 0 : -ENODEV;
-}
-#else
 int vg_imu_scan(void)
 {
   struct vg_imu_s imu;
@@ -1178,4 +705,3 @@ int vg_imu_scan(void)
   vg_imu_close(&imu);
   return 0;
 }
-#endif /* CONFIG_CONTEST2026_148_VELAGUARD_IMU_LEGACY_I2C */

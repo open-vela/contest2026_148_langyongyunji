@@ -24,7 +24,7 @@ export PYTHONPATH="$PWD/prebuilts/tools/python/dist-packages/pyelftools:$PWD/pre
 export PATH="$PWD/prebuilts/tools/linux/x86_64:$PATH"
 
 cmake -B cmake_out/velaguard_huangshan -S "$PWD/nuttx" -GNinja \
-  -DBOARD_CONFIG=../vendor/openvela/boards/contest2026_148_board/configs/nsh \
+  -DBOARD_CONFIG="$PWD/contest2026_148_langyongyunji/board/contest_board/configs/nsh" \
   -DEXTRA_FLAGS="-Wno-cpp -Wno-deprecated-declarations"
 
 cmake --build cmake_out/velaguard_huangshan

@@ -45,6 +45,8 @@ CONFIG_DEV_URANDOM=y
 CONFIG_DEV_URANDOM_XORSHIFT128=y
 CONFIG_DRIVERS_WIRELESS=y
 CONFIG_DRIVERS_BLUETOOTH=y
+# The legacy VelaGuard BLE app uses the ZBlue host directly.  Keep the
+# Framework/libuv module out of this image so it cannot select its H4 port.
 # CONFIG_LIBUV is not set
 CONFIG_LIBUV_THREADPOOL_SIZE=1
 CONFIG_LIBUV_THREAD_STACKSIZE=8192
@@ -53,7 +55,7 @@ CONFIG_LIBUV_STREAM_READ_BUF_SIZE=4096
 # CONFIG_LIBUV_BACKEND_EPOLL is not set
 # CONFIG_LIBUV_EXTENSION is not set
 CONFIG_SYSTEM_WORKQUEUE_STACK_SIZE=32768
-CONFIG_SYSTEM_WORKQUEUE_NO_YIELD=y
+# CONFIG_SYSTEM_WORKQUEUE_NO_YIELD is not set
 CONFIG_UNQLITE=y
 # CONFIG_BLUETOOTH is not set
 CONFIG_BLUETOOTH_FRAMEWORK=y
@@ -66,7 +68,7 @@ CONFIG_BLUETOOTH_STACK_BREDR_ZBLUE=y
 CONFIG_BLUETOOTH_STACK_LE_ZBLUE=y
 CONFIG_BLUETOOTH_STORAGE_UNQLITE_SUPPORT=y
 CONFIG_BLUETOOTH_SERVICE_HCI_UART_NAME="/dev/ttyHCI0"
-CONFIG_BLUETOOTH_TOOLS=y
+# CONFIG_BLUETOOTH_TOOLS is not set
 # CONFIG_BLUETOOTH_LOG is not set
 CONFIG_BT=y
 CONFIG_BT_CLASSIC=y
@@ -76,13 +78,19 @@ CONFIG_BT_EXT_ADV_LEGACY_SUPPORT=y
 # CONFIG_BT_HCI_ACL_FLOW_CONTROL is not set
 CONFIG_BT_POWER_MODE_CONTROL=y
 CONFIG_BT_GATT_CLIENT=y
+# CONFIG_CONTEST2026_148_VELAGUARD_HEADLESS is not set
 # VelaGuard uses a fixed phone-facing peripheral identity.  Avoid RPA/random
 # address refresh during advertising restart; SF32LB52 may timeout on
 # LE Set Random Address while restarting advertising after disconnect.
 # CONFIG_BT_PRIVACY is not set
-# Allow optional Just Works bonding for generic BLE tools.  The VelaGuard
-# application protocol itself does not require pairing or encryption.
+CONFIG_BT_HOST_CRYPTO=y
+CONFIG_BT_HOST_CRYPTO_PRNG=y
+CONFIG_CRYPTO_MBEDTLS=y
+CONFIG_MBEDTLS_PSA_CRYPTO_C=y
+# VelaGuard's phone link is a plain GATT peripheral protocol.  Pairing is not
+# required by the app protocol, but zblue Classic/SMP needs host crypto helpers.
 # CONFIG_BT_SMP_ENFORCE_MITM is not set
+CONFIG_BT_MAX_PAIRED=1
 # CONFIG_BT_GAP_AUTO_UPDATE_CONN_PARAMS is not set
 # CONFIG_BT_AUTO_PHY_UPDATE is not set
 # CONFIG_BT_AUTO_DATA_LEN_UPDATE is not set
@@ -95,7 +103,7 @@ CONFIG_BT_DEVICE_NAME_DYNAMIC=y
 CONFIG_BT_UART_ON_DEV_NAME="/dev/ttyHCI0"
 CONFIG_ETC_ROMFS=y
 CONFIG_EXAMPLES_HELLO=y
-CONFIG_EXAMPLES_HCITEST=y
+# CONFIG_EXAMPLES_HCITEST is not set
 CONFIG_EXAMPLES_IPCQTEST=y
 CONFIG_EXAMPLES_ADC=y
 CONFIG_EXAMPLES_ADC_SWTRIG=y

@@ -50,8 +50,14 @@ if $DO_RECONFIG || [[ ! -f "${BUILD_DIR}/build.ninja" ]]; then
   export PYTHONPATH="${REPO_ROOT}/prebuilts/tools/python/dist-packages/pyelftools:${REPO_ROOT}/prebuilts/tools/python/dist-packages/cxxfilt:${PYTHONPATH:-}"
   export PATH="${REPO_ROOT}/prebuilts/tools/linux/x86_64:${PATH:-}"
 
-  cmake -B "${BUILD_DIR}" -S "${REPO_ROOT}/nuttx" -GNinja \
-    -DBOARD_CONFIG=../vendor/openvela/boards/contest2026_148_board/configs/nsh \
+  CMAKE_RECONFIG_ARGS=()
+  if $DO_RECONFIG; then
+    CMAKE_RECONFIG_ARGS=(-U NUTTX_DEFCONFIG_SAVED)
+  fi
+
+  cmake "${CMAKE_RECONFIG_ARGS[@]}" -B "${BUILD_DIR}" -S "${REPO_ROOT}/nuttx" -GNinja \
+    -DBOARD_CONFIG="${CONTEST_DIR}/board/contest_board/configs/nsh" \
+    -DKCONFIG_CONFIG="${CONTEST_DIR}/board/contest_board/configs/nsh/defconfig" \
     -DEXTRA_FLAGS="-Wno-cpp -Wno-deprecated-declarations"
 fi
 

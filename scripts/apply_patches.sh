@@ -42,7 +42,8 @@ if [[ ! -d "${PATCH_DIR}" ]]; then
   exit 1
 fi
 
-PATCHES=($(ls "${PATCH_DIR}"/*.patch 2>/dev/null | sort))
+mapfile -t PATCHES < <(find "${PATCH_DIR}" -maxdepth 1 -type f \
+  -name '*.patch' -print | sort)
 if [[ ${#PATCHES[@]} -eq 0 ]]; then
   echo "[apply_patches] ERROR: no .patch files found in ${PATCH_DIR}" >&2
   exit 1
@@ -52,13 +53,27 @@ fi
 if [[ "${MODE}" == "check" ]]; then
   echo "[apply_patches] DRY-RUN: checking ${#PATCHES[@]} patch(es)..."
   for p in "${PATCHES[@]}"; do
-    echo "  checking $(basename "$p") ..."
-    if ! git -C "${SIFLI_DIR}" apply --check --whitespace=nowarn "$p"; then
-      echo "[apply_patches] ERROR: $(basename "$p") does NOT apply cleanly" >&2
-      exit 1
+    b="$(basename "$p")"
+    PATCH_ARGS=()
+    if [[ "${b}" == 0004-* ]]; then
+      PATCH_ARGS+=(--exclude=boards/sf32lb52/lckfb_huangshan_pi/src/CMakeLists.txt)
+    fi
+
+    if [[ -f "${STAMP_FILE}" ]] && grep -Fxq "${b}" "${STAMP_FILE}"; then
+      # New files from a patch are intentionally untracked in vendor/sifli.
+      # git apply --reverse --check rejects that state even when the patch was
+      # applied correctly, so the stamp is the source of truth here.
+      echo "  checking ${b}: already applied (stamp)"
+    else
+      echo "  checking ${b}: not applied ..."
+      if ! git -C "${SIFLI_DIR}" apply --check --whitespace=nowarn \
+          "${PATCH_ARGS[@]}" "$p"; then
+        echo "[apply_patches] ERROR: ${b} does NOT apply cleanly" >&2
+        exit 1
+      fi
     fi
   done
-  echo "[apply_patches] All patches apply cleanly."
+  echo "[apply_patches] Patch state is consistent."
   exit 0
 fi
 
@@ -95,9 +110,24 @@ fi
 # --- apply ---
 echo "[apply_patches] applying ${#TO_APPLY[@]} patch(es) to vendor/sifli..."
 for p in "${TO_APPLY[@]}"; do
-  echo "  applying $(basename "$p") ..."
-  git -C "${SIFLI_DIR}" apply --whitespace=nowarn "$p"
-  basename "$p" >> "${STAMP_FILE}"
+  b="$(basename "$p")"
+  echo "  applying ${b} ..."
+  PATCH_ARGS=()
+  if [[ "${b}" == 0004-* ]]; then
+    # The current BSP already recursively packages src/etc; the old PR CMake
+    # hunk targets a different BSP revision, but the WAV resources are valid.
+    PATCH_ARGS+=(--exclude=boards/sf32lb52/lckfb_huangshan_pi/src/CMakeLists.txt)
+  fi
+
+  if git -C "${SIFLI_DIR}" apply --check --whitespace=nowarn "${PATCH_ARGS[@]}" "$p"; then
+    git -C "${SIFLI_DIR}" apply --whitespace=nowarn "${PATCH_ARGS[@]}" "$p"
+  elif git -C "${SIFLI_DIR}" apply --reverse --check --whitespace=nowarn "${PATCH_ARGS[@]}" "$p"; then
+    echo "[apply_patches]   already present in vendor tree: ${b}"
+  else
+    echo "[apply_patches] ERROR: ${b} does not apply and is not already present" >&2
+    exit 1
+  fi
+  printf '%s\n' "${b}" >> "${STAMP_FILE}"
 done
 
 echo "[apply_patches] done.  ${#TO_APPLY[@]} patch(es) applied successfully."

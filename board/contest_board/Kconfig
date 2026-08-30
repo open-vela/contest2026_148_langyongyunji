@@ -6,6 +6,12 @@
 
 if ARCH_BOARD_CONTEST2026_148_BOARD
 
+# The custom board uses the official SiFli Huangshan Pi BSP.  Import its
+# board-driver Kconfig so LCD/touch/audio options in the project defconfig are
+# recognized during the NuttX configuration pass.
+source "$TOPDIR/../vendor/sifli/boards/sf32lb52/drivers/lcd/Kconfig"
+source "$TOPDIR/../vendor/sifli/boards/sf32lb52/drivers/input/Kconfig"
+
 config ARCH_BOARD_CONTEST2026_148_BOARD_TAG
 	string "Board tag"
 	default "contest2026_148_board"

@@ -872,6 +872,17 @@ void vg_ble_process_ui(void)
     }
 }
 
+void vg_ble_process_time(void)
+{
+  vg_ble_process_ui();
+}
+
+void vg_ble_set_fall_status(bool active)
+{
+  /* The rollback protocol reports events through CALL_REQUEST. */
+  UNUSED(active);
+}
+
 bool vg_ble_is_connected(void)
 {
   return g_vg_connected;
@@ -885,6 +896,11 @@ bool vg_ble_is_initialized(void)
 bool vg_ble_is_enabled(void)
 {
   return g_vg_enabled;
+}
+
+bool vg_ble_is_ready(void)
+{
+  return g_vg_initialized && g_vg_enabled;
 }
 
 bool vg_ble_is_advertising(void)
@@ -986,6 +1002,14 @@ void vg_ble_get_local_address(char *buf, size_t len)
 
   strlcpy(buf, g_vg_local_addr[0] == '\0' ? "pending" :
           g_vg_local_addr, len);
+}
+
+void vg_ble_get_device_name(char *buf, size_t len)
+{
+  if (buf != NULL && len != 0)
+    {
+      strlcpy(buf, "VelaGuard", len);
+    }
 }
 
 bool vg_ble_local_address_is_default(void)

@@ -1,0 +1,296 @@
+diff --git a/chips/sf32lb52/sf32lb52_bth4.c b/chips/sf32lb52/sf32lb52_bth4.c
+index 49796cc..a8394c4 100644
+--- a/chips/sf32lb52/sf32lb52_bth4.c
++++ b/chips/sf32lb52/sf32lb52_bth4.c
+@@ -165,7 +165,6 @@ static int sf32lb52_bt_send(struct bt_driver_s *drv,
+                             void *data, size_t len);
+ static void sf32lb52_bt_close(struct bt_driver_s *drv);
+ static int sf32lb52_bt_recv_cb(uint8_t *data, uint16_t len);
+-static int sf32lb52_bt_ensure_controller_enabled(uint16_t opcode);
+ 
+ #ifdef CONFIG_BT
+ extern void z_sys_init(void);
+@@ -191,12 +190,6 @@ static uint16_t sf32lb52_bt_get_le16(const uint8_t *data)
+   return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
+ }
+ 
+-static void sf32lb52_bt_put_le16(uint8_t *data, uint16_t value)
+-{
+-  data[0] = value & 0xff;
+-  data[1] = value >> 8;
+-}
+-
+ static ssize_t sf32lb52_bt_h4_packet_len(const uint8_t *data, size_t len)
+ {
+   uint16_t payload_len;
+@@ -240,34 +233,6 @@ static ssize_t sf32lb52_bt_h4_packet_len(const uint8_t *data, size_t len)
+     }
+ }
+ 
+-static void sf32lb52_bt_normalize_event(uint8_t *data, size_t len)
+-{
+-  uint16_t opcode;
+-
+-  if (len < H4_HEADER_SIZE + sizeof(struct bt_hci_evt_hdr_s) + 4 ||
+-      data[0] != H4_EVT)
+-    {
+-      return;
+-    }
+-
+-  if (data[1] == BT_HCI_EVT_CMD_COMPLETE && data[2] >= 4)
+-    {
+-      opcode = sf32lb52_bt_get_le16(&data[4]);
+-      if (opcode == BT_HCI_OP_RESET && data[6] != SF32LB52_HCI_STATUS_SUCCESS)
+-        {
+-          data[6] = SF32LB52_HCI_STATUS_SUCCESS;
+-        }
+-    }
+-  else if (data[1] == BT_HCI_EVT_CMD_STATUS && data[2] >= 4)
+-    {
+-      opcode = sf32lb52_bt_get_le16(&data[5]);
+-      if (opcode == BT_HCI_OP_RESET && data[3] != SF32LB52_HCI_STATUS_SUCCESS)
+-        {
+-          data[3] = SF32LB52_HCI_STATUS_SUCCESS;
+-        }
+-    }
+-}
+-
+ static int sf32lb52_bt_forward_packet(struct sf32lb52_bt_priv_s *priv,
+                                       uint8_t *data, size_t len)
+ {
+@@ -282,7 +247,6 @@ static int sf32lb52_bt_forward_packet(struct sf32lb52_bt_priv_s *priv,
+   switch (data[0])
+     {
+       case H4_EVT:
+-        sf32lb52_bt_normalize_event(data, len);
+         type = BT_EVT;
+         break;
+ 
+@@ -310,152 +274,6 @@ static int sf32lb52_bt_forward_packet(struct sf32lb52_bt_priv_s *priv,
+   return ret;
+ }
+ 
+-static int sf32lb52_bt_synth_cmd_complete(struct sf32lb52_bt_priv_s *priv,
+-                                          uint16_t opcode,
+-                                          const uint8_t *return_params,
+-                                          size_t return_len)
+-{
+-  uint8_t event[H4_HEADER_SIZE + sizeof(struct bt_hci_evt_hdr_s) + 3 +
+-                SF32LB52_HCI_MAX_CMD_COMPLETE_RPLEN];
+-  size_t payload_len;
+-
+-  if (return_len > SF32LB52_HCI_MAX_CMD_COMPLETE_RPLEN)
+-    {
+-      return -E2BIG;
+-    }
+-
+-  payload_len = 3 + return_len;
+-  event[0] = H4_EVT;
+-  event[1] = BT_HCI_EVT_CMD_COMPLETE;
+-  event[2] = payload_len;
+-  event[3] = 1;
+-  sf32lb52_bt_put_le16(&event[4], opcode);
+-  if (return_len > 0)
+-    {
+-      memcpy(&event[6], return_params, return_len);
+-    }
+-
+-  return sf32lb52_bt_forward_packet(priv, event,
+-                                    H4_HEADER_SIZE +
+-                                    sizeof(struct bt_hci_evt_hdr_s) +
+-                                    payload_len);
+-}
+-
+-static int sf32lb52_bt_synth_status_complete(struct sf32lb52_bt_priv_s *priv,
+-                                             uint16_t opcode)
+-{
+-  const uint8_t status = SF32LB52_HCI_STATUS_SUCCESS;
+-
+-  return sf32lb52_bt_synth_cmd_complete(priv, opcode, &status,
+-                                        sizeof(status));
+-}
+-
+-static bool sf32lb52_bt_emulate_cmd(struct sf32lb52_bt_priv_s *priv,
+-                                    uint16_t opcode, int *ret)
+-{
+-  uint8_t params[SF32LB52_HCI_MAX_CMD_COMPLETE_RPLEN];
+-
+-  switch (opcode)
+-    {
+-      case BT_HCI_OP_READ_SUPPORTED_COMMANDS:
+-        memset(params, 0, sizeof(params));
+-        params[0] = SF32LB52_HCI_STATUS_SUCCESS;
+-        params[1 + 27] = 1 << 7;
+-        *ret = sf32lb52_bt_synth_cmd_complete(priv, opcode, params,
+-                                              SF32LB52_HCI_READ_COMMANDS_RPLEN);
+-        return true;
+-
+-      case BT_HCI_OP_LE_RAND:
+-        params[0] = SF32LB52_HCI_STATUS_SUCCESS;
+-        arc4random_buf(&params[1], SF32LB52_HCI_RAND_RPLEN - 1);
+-        *ret = sf32lb52_bt_synth_cmd_complete(priv, opcode, params,
+-                                              SF32LB52_HCI_RAND_RPLEN);
+-        return true;
+-
+-      case BT_HCI_OP_READ_LOCAL_EXT_FEATURES:
+-        memset(params, 0, 11);
+-        params[0] = SF32LB52_HCI_STATUS_SUCCESS;
+-        *ret = sf32lb52_bt_synth_cmd_complete(priv, opcode, params, 11);
+-        return true;
+-
+-      case BT_HCI_OP_READ_BUFFER_SIZE:
+-        params[0] = SF32LB52_HCI_STATUS_SUCCESS;
+-        sf32lb52_bt_put_le16(&params[1], 0x00fb);
+-        params[3] = 0;
+-        sf32lb52_bt_put_le16(&params[4], 4);
+-        sf32lb52_bt_put_le16(&params[6], 0);
+-        *ret = sf32lb52_bt_synth_cmd_complete(priv, opcode, params, 8);
+-        return true;
+-
+-      case BT_HCI_OP_LE_READ_BUFFER_SIZE:
+-        params[0] = SF32LB52_HCI_STATUS_SUCCESS;
+-        sf32lb52_bt_put_le16(&params[1], 0x00fb);
+-        params[3] = 4;
+-        *ret = sf32lb52_bt_synth_cmd_complete(priv, opcode, params, 4);
+-        return true;
+-
+-      case BT_HCI_OP_LE_READ_LOCAL_FEATURES:
+-        memset(params, 0, 9);
+-        params[0] = SF32LB52_HCI_STATUS_SUCCESS;
+-        *ret = sf32lb52_bt_synth_cmd_complete(priv, opcode, params, 9);
+-        return true;
+-
+-      case BT_HCI_OP_LE_READ_MAX_DATA_LEN:
+-        params[0] = SF32LB52_HCI_STATUS_SUCCESS;
+-        sf32lb52_bt_put_le16(&params[1], 0x00fb);
+-        sf32lb52_bt_put_le16(&params[3], 0x0148);
+-        sf32lb52_bt_put_le16(&params[5], 0x00fb);
+-        sf32lb52_bt_put_le16(&params[7], 0x0148);
+-        *ret = sf32lb52_bt_synth_cmd_complete(priv, opcode, params, 9);
+-        return true;
+-
+-      case BT_HCI_OP_LE_READ_MAX_ADV_DATA_LEN:
+-        params[0] = SF32LB52_HCI_STATUS_SUCCESS;
+-        sf32lb52_bt_put_le16(&params[1], 31);
+-        *ret = sf32lb52_bt_synth_cmd_complete(priv, opcode, params, 3);
+-        return true;
+-
+-      case BT_HCI_OP_LE_READ_SUPP_STATES:
+-        memset(params, 0, 9);
+-        *ret = sf32lb52_bt_synth_cmd_complete(priv, opcode, params, 9);
+-        return true;
+-
+-      case BT_HCI_OP_LE_READ_RL_SIZE:
+-        params[0] = SF32LB52_HCI_STATUS_SUCCESS;
+-        params[1] = 0;
+-        *ret = sf32lb52_bt_synth_cmd_complete(priv, opcode, params, 2);
+-        return true;
+-
+-      case BT_HCI_OP_LE_WRITE_LE_HOST_SUPP:
+-      case BT_HCI_OP_LE_SET_HOST_FEATURE:
+-      case BT_HCI_OP_LE_SET_EVENT_MASK:
+-      case BT_HCI_OP_LE_WRITE_DEFAULT_DATA_LEN:
+-      case BT_HCI_OP_LE_SET_RPA_TIMEOUT:
+-      case BT_HCI_OP_SET_EVENT_MASK:
+-      case BT_HCI_OP_SET_EVENT_MASK_PAGE_2:
+-      case BT_HCI_OP_WRITE_LOCAL_NAME:
+-      case BT_HCI_OP_WRITE_SCAN_ENABLE:
+-      case BT_HCI_OP_WRITE_PAGE_SCAN_ACTIVITY:
+-      case BT_HCI_OP_WRITE_INQUIRY_SCAN_ACTIVITY:
+-      case BT_HCI_OP_WRITE_PAGE_TIMEOUT:
+-      case BT_HCI_OP_WRITE_CLASS_OF_DEVICE:
+-      case BT_HCI_OP_WRITE_INQUIRY_SCAN_TYPE:
+-      case BT_HCI_OP_WRITE_EXTENDED_INQUIRY_RESPONSE:
+-      case BT_HCI_OP_WRITE_INQUIRY_MODE:
+-      case BT_HCI_OP_WRITE_PAGE_SCAN_TYPE:
+-      case BT_HCI_OP_WRITE_SSP_MODE:
+-      case BT_HCI_OP_WRITE_SC_HOST_SUPP:
+-      case BT_HCI_OP_WRITE_DEFAULT_LINK_POLICY_SETTINGS:
+-      case BT_HCI_OP_HOST_BUFFER_SIZE:
+-      case BT_HCI_OP_SET_CTL_TO_HOST_FLOW:
+-        *ret = sf32lb52_bt_synth_status_complete(priv, opcode);
+-        return true;
+-
+-      default:
+-        return false;
+-    }
+-}
+-
+ static struct sf32lb52_bt_priv_s g_sf32lb52_bt_priv =
+ {
+   .drv =
+@@ -549,7 +367,6 @@ static int sf32lb52_bt_send(struct bt_driver_s *drv,
+ {
+   struct sf32lb52_bt_priv_s *priv = &g_sf32lb52_bt_priv;
+   uint8_t *hdr = (uint8_t *)data - drv->head_reserve;
+-  uint16_t opcode;
+   int ret;
+ 
+   switch (type)
+@@ -567,29 +384,6 @@ static int sf32lb52_bt_send(struct bt_driver_s *drv,
+         return -EINVAL;
+     }
+ 
+-  if (type == BT_CMD && len >= sizeof(struct bt_hci_cmd_hdr_s))
+-    {
+-      opcode = sf32lb52_bt_get_le16(data);
+-      if (sf32lb52_bt_emulate_cmd(priv, opcode, &ret))
+-        {
+-          return ret < 0 ? ret : len;
+-        }
+-
+-      ret = sf32lb52_bt_ensure_controller_enabled(opcode);
+-      if (ret < 0)
+-        {
+-          return ret;
+-        }
+-    }
+-  else
+-    {
+-      ret = sf32lb52_bt_ensure_controller_enabled(0);
+-      if (ret < 0)
+-        {
+-          return ret;
+-        }
+-    }
+-
+   priv->drop_rx_until_tx = false;
+ 
+   if (SF32LB52_BT_TRACE && type == BT_ACL_OUT)
+@@ -614,22 +408,6 @@ static int sf32lb52_bt_send(struct bt_driver_s *drv,
+   return len;
+ }
+ 
+-static int sf32lb52_bt_ensure_controller_enabled(uint16_t opcode)
+-{
+-  int ret;
+-
+-  ret = sf32lb52_bt_controller_enable();
+-  if (ret < 0)
+-    {
+-      syslog(LOG_ERR,
+-             "sf32lb52 bth4 controller enable failed before opcode=0x%04x: %d\n",
+-             opcode,
+-             ret);
+-    }
+-
+-  return ret;
+-}
+-
+ static int sf32lb52_bt_open(struct bt_driver_s *drv)
+ {
+   int ret;
+@@ -651,6 +429,12 @@ static int sf32lb52_bt_open(struct bt_driver_s *drv)
+       return ret;
+     }
+ 
++  ret = sf32lb52_bt_controller_enable();
++  if (ret < 0)
++    {
++      return ret;
++    }
++
+   return OK;
+ }
+ 
+

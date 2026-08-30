@@ -4,13 +4,10 @@
 `hello_app` 是为了兼容比赛仓的 linkfile 和 openvela 构建映射；实际作品名和
 NSH 命令名均为 VelaGuard。
 
-当前实现是黄山派 SF32LB52 上的 VelaGuard 原生 LVGL 应用原型，NSH 命令名为：
+当前实现是黄山派 SF32LB52 上的 VelaGuard 原生 LVGL 应用。NSH 命令只负责启动常驻业务：
 
 ```sh
 velaguard
-velaguard --imu-scan
-velaguard --imu-test 50
-velaguard --fall-watch 30
 ```
 
 应用先跑通真实业务闭环：中文守护主界面、真实 IMU 跌倒检测、手动 SOS、倒计时确认、事件历史、设置页面，以及串口 JSON 事件输出。主界面已移除演示按钮，只显示守护状态、实时 IMU 判断依据和必要操作入口。
@@ -27,15 +24,15 @@ export PYTHONPATH="$PWD/prebuilts/tools/python/dist-packages/pyelftools:$PWD/pre
 export PATH="$PWD/prebuilts/tools/linux/x86_64:$PATH"
 
 cmake -B cmake_out/velaguard_huangshan -S "$PWD/nuttx" -GNinja \
-  -DBOARD_CONFIG=../vendor/openvela/boards/contest2026_148_board/configs/nsh \
+  -DBOARD_CONFIG="$PWD/contest2026_148_langyongyunji/board/contest_board/configs/nsh" \
   -DEXTRA_FLAGS="-Wno-cpp -Wno-deprecated-declarations"
 
 cmake --build cmake_out/velaguard_huangshan
 ```
 
-这里的 `BOARD_CONFIG` 位于本队比赛仓，它复用官方
+这里的 `BOARD_CONFIG` 位于本队 Git 仓库，它复用官方
 `vendor/sifli/boards/sf32lb52/lckfb_huangshan_pi` BSP，并启用 VelaGuard。
-不要使用官方 BSP 目录中的 `configs/nsh` 作为 VelaGuard 构建配置，因为那会让
+不要使用 vendor 目录中的同名配置作为 VelaGuard 构建配置，因为那会让
 本队应用开关依赖未提交的本地修改。
 
 构建产物：`cmake_out/velaguard_huangshan/nuttx.bin`。
@@ -64,29 +61,11 @@ hello_app/
 
 ## 架构分层
 
-1. `core`：VelaGuard 应用层，负责 LVGL 页面、倒计时确认、SOS 告警、事件历史、串口 JSON 输出和 NSH 参数解析。
+1. `core`：VelaGuard 应用层，负责 LVGL 页面、倒计时确认、SOS 告警、事件历史和串口 JSON 输出。
 2. `sensors`：硬件感知层，负责黄山派 LSM6DSx IMU 的 I2C 读写、pinmux 切换、WHO_AM_I 探测和真实加速度/陀螺仪采样。
 3. `algorithm`：端侧算法层，负责基于 IMU 的跌倒检测规则，当前使用冲击、角速度、姿态变化、后续静止窗口和置信度评分。
 4. `ui`：界面资源层，当前放置中文字体资源，主界面只展示真实守护状态和必要操作入口。
 5. `comm`：通信层规划，当前串口 JSON 上报已在 `core` 中跑通；后续 BLE/GATT、手机端连接和多通道上报可以迁入该目录。
-
-## 真机验证
-
-```sh
-velaguard
-velaguard --imu-scan       # 探测 LSM6DSx，正常应看到 /dev/lsm6dsl0 0x6a WHO_AM_I=0x6a
-velaguard --imu-test 50    # 打印 50 组真实加速度/陀螺仪数据
-velaguard --fall-watch 30  # 连续 30 秒运行真实 IMU 跌倒检测
-```
-
-开发调试时仍保留以下参数，用于不依赖硬件动作快速验证事件状态机：
-
-```sh
-velaguard --demo fall
-velaguard --demo sound
-velaguard --demo voice
-velaguard --demo sos
-```
 
 串口事件前缀为 `VELAGUARD_EVENT`，电脑端 Mock 或 ai_agent 后续可以直接按这个前缀解析 JSON。
 
@@ -117,5 +96,5 @@ contest2026_148_langyongyunji/agent_skills/velaguard-safety.md
 1. 用 `tc 5` 与 `velaguard` 对比触摸响应，确认卡顿来自应用重绘还是触摸驱动。
 2. 固化电脑端 Mock：监听串口，解析 `VELAGUARD_EVENT`，显示事件类型、风险、置信度和摘要。
 3. 将串口 JSON 上报抽成 `comm/velaguard_report.c`，为蓝牙上报复用同一事件结构。
-4. 持续记录 `--fall-watch` 与主界面真实跌倒触发数据，按误报/漏报继续调节阈值。
+4. 持续记录主界面真实跌倒触发数据，按误报/漏报继续调节阈值。
 5. 在 ai_agent 固件或外部 Agent 中演示 `velaguard-safety` Skill，补齐赛道要求。

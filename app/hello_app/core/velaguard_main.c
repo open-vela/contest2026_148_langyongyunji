@@ -175,11 +175,6 @@ LV_FONT_DECLARE(velaguard_font_30);
 #define VG_DEVICE_WAIT_MS      5000
 #define VG_VOICE_REARM_MS       3000
 #define VG_LIGHTWEIGHT_UI       0
-#define VG_BLE_RETRY_MS         5000
-#define VG_BLE_MAX_INIT_ATTEMPTS 2
-#define VG_BLE_FAIL_BACKOFF_MS  60000
-#define VG_BLE_TASK_STACKSIZE   16384
-#define VG_BLE_TASK_SLEEP_MS    20
 #define VG_LOCAL_TIME_OFFSET_SECONDS (8 * 60 * 60)
 #define VG_BASE_W               240
 #define VG_BASE_H               280
@@ -188,6 +183,7 @@ LV_FONT_DECLARE(velaguard_font_30);
 #define VG_X(v)                 ((int32_t)(((v) * VG_SCREEN_W + VG_BASE_W / 2) / VG_BASE_W))
 #define VG_Y(v)                 ((int32_t)(((v) * VG_SCREEN_H + VG_BASE_H / 2) / VG_BASE_H))
 #define VG_SOS_LONG_MS          1200
+#define VG_BUTTON_RELEASE_DEBOUNCE_MS 100
 #define VG_HOLD_CONFIRM_MS      3000
 #define VG_ALARM_FRAME_COUNT    1
 
@@ -281,6 +277,7 @@ struct vg_app_s
   uint32_t audio_report_tick;
   uint64_t voice_last_trigger_ms;
   uint64_t button_down_ms;
+  uint64_t button_release_candidate_ms;
   uint64_t countdown_start_ms;
   uint64_t ble_toggle_last_ms;
   uint64_t hold_cancel_start_ms;
@@ -339,7 +336,6 @@ struct vg_app_s
 static void vg_render_home(void);
 static void vg_render_prealert(void);
 static void vg_render_alert(void);
-static void vg_render_sos_prompt(void);
 static void vg_render_history(void);
 static void vg_render_settings(void);
 static void vg_render_bluetooth(void);
@@ -347,6 +343,7 @@ static void __attribute__((unused)) vg_render_watchface_picker(void);
 static void vg_render_current(void);
 static void vg_nav_request(enum vg_page_e target, lv_dir_t dir,
                            const char *source);
+static uint64_t vg_uptime_ms(void);
 static void vg_set_font(lv_obj_t *obj);
 static void vg_trigger_fall_result(const struct vg_fall_result_s *result);
 static void vg_start_prealert(enum vg_event_type_e type, int countdown,
@@ -358,20 +355,6 @@ static void vg_update_alarm_hold(void);
 static void vg_render_fall_hold_progress(enum vg_action_e action);
 static void vg_update_hold_progress_visuals(uint64_t now);
 static void vg_audio_process(void);
-static int vg_ble_service_task(int argc, char *argv[]);
-
-struct vg_cmd_args_s
-{
-  bool has_initial_event;
-  bool imu_scan;
-  bool imu_test;
-  bool fall_watch;
-  bool touch_test;
-  enum vg_event_type_e initial_event;
-  int imu_samples;
-  int fall_watch_seconds;
-  int touch_samples;
-};
 
 /****************************************************************************
  * Private Data
@@ -475,48 +458,6 @@ static const lv_image_dsc_t *g_touch_week_digits[7] =
   &velaguard_img_icon_touch_future_week_5,
   &velaguard_img_icon_touch_future_week_6,
 };
-
-static int vg_ble_service_task(int argc, char *argv[])
-{
-  int failures = 0;
-  int ret;
-
-  UNUSED(argc);
-  UNUSED(argv);
-
-  for (; ; )
-    {
-      if (!vg_ble_is_initialized())
-        {
-          printf("VelaGuard BLE: service init attempt\n");
-          ret = vg_ble_init();
-          if (ret < 0)
-            {
-              failures++;
-              printf("VelaGuard BLE: service init failed: %d attempt=%d/%d\n",
-                     ret, failures, VG_BLE_MAX_INIT_ATTEMPTS);
-              if (ret == -ENODEV || failures >= VG_BLE_MAX_INIT_ATTEMPTS)
-                {
-                  printf("VelaGuard BLE: init stopped after persistent failure; reset board to retry controller bring-up\n");
-                  for (; ; )
-                    {
-                      usleep(VG_BLE_FAIL_BACKOFF_MS * 1000);
-                    }
-                }
-
-              usleep(VG_BLE_RETRY_MS * 1000);
-              continue;
-            }
-
-          failures = 0;
-        }
-
-      vg_ble_process();
-      usleep(VG_BLE_TASK_SLEEP_MS * 1000);
-    }
-
-  return 0;
-}
 
 /****************************************************************************
  * Private Functions
@@ -814,6 +755,11 @@ static void vg_start_prealert(enum vg_event_type_e type, int countdown,
                               int risk, int confidence)
 {
   vg_prepare_event(type, risk, confidence, "suspected");
+  if (type == VG_EVENT_FALL)
+    {
+      vg_ble_set_fall_status(true);
+    }
+
   g_vg.state = VG_STATE_PREALERT;
   g_vg.countdown = countdown;
   g_vg.countdown_total = countdown;
@@ -910,6 +856,7 @@ static void vg_cancel_event(void)
   g_vg.countdown_last_value = 0;
   g_vg.countdown_start_ms = 0;
   g_vg.has_fall_result = false;
+  vg_ble_set_fall_status(false);
   g_vg.sos_prompt_visible = false;
   g_vg.hold_cancel_active = false;
   g_vg.hold_confirm_active = false;
@@ -934,6 +881,7 @@ static void vg_resolve_event(void)
   g_vg.countdown_last_value = 0;
   g_vg.countdown_start_ms = 0;
   g_vg.has_fall_result = false;
+  vg_ble_set_fall_status(false);
   g_vg.sos_prompt_visible = false;
   g_vg.hold_cancel_active = false;
   g_vg.hold_confirm_active = false;
@@ -1646,26 +1594,6 @@ static void vg_update_watchface_time(void)
   g_vg.home_last_mday = tm_now.tm_mday;
 }
 
-static void vg_render_sos_prompt(void)
-{
-  lv_obj_t *scr = vg_screen_reset();
-  lv_obj_t *root;
-  lv_obj_t *label;
-
-  lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), LV_PART_MAIN);
-  root = vg_fixed_root(scr);
-  vg_image_at(root, &velaguard_img_bg_alarm, 0, 0);
-  g_vg.alarm_img = vg_image_at(root, g_alarm_frames[0], VG_X(93),
-                                VG_Y(45));
-
-  label = vg_label(root, "发送紧急求助", VG_X(200), LV_TEXT_ALIGN_CENTER,
-                   VG_COLOR_TEXT);
-  lv_obj_align(label, LV_ALIGN_TOP_MID, 0, VG_Y(114));
-
-  vg_round_band(root, VG_X(43), VG_Y(198), VG_X(154), VG_Y(48),
-                0xff5a1f, "请长按求助");
-}
-
 static void vg_update_countdown_visuals(void)
 {
   char line[16];
@@ -1989,6 +1917,8 @@ static void vg_render_alert(void)
 
   if (prealert && g_vg.active.type == VG_EVENT_MANUAL_SOS)
     {
+      printf("VelaGuard UI: SOS countdown render value=%d total=%d\n",
+             g_vg.countdown, g_vg.countdown_total);
       g_vg.countdown_arc = lv_arc_create(root);
       lv_obj_set_size(g_vg.countdown_arc, VG_X(86), VG_X(86));
       lv_obj_align(g_vg.countdown_arc, LV_ALIGN_TOP_MID, 0, VG_Y(34));
@@ -2146,7 +2076,9 @@ static void vg_render_bluetooth(void)
   lv_obj_t *label;
   lv_obj_t *sw;
   lv_obj_t *dot;
+  char name[64];
   char addr[40];
+  bool ble_switch_on;
 
   g_vg.current_page = VG_PAGE_BLUETOOTH;
   lv_obj_set_style_bg_color(scr, lv_color_hex(0x000000), LV_PART_MAIN);
@@ -2164,9 +2096,10 @@ static void vg_render_bluetooth(void)
   lv_obj_align(label, LV_ALIGN_TOP_LEFT, VG_X(58), VG_Y(32));
 
   sw = lv_button_create(root);
+  ble_switch_on = vg_ble_is_enabled();
   lv_obj_set_size(sw, VG_X(96), VG_Y(54));
   lv_obj_align(sw, LV_ALIGN_TOP_RIGHT, -VG_X(8), VG_Y(15));
-  lv_obj_set_style_bg_color(sw, lv_color_hex(vg_ble_is_enabled() ?
+  lv_obj_set_style_bg_color(sw, lv_color_hex(ble_switch_on ?
                           0xff6a00 : 0x3a3a3a), LV_PART_MAIN);
   lv_obj_set_style_radius(sw, VG_Y(27), LV_PART_MAIN);
   lv_obj_set_style_border_width(sw, 0, LV_PART_MAIN);
@@ -2176,8 +2109,8 @@ static void vg_render_bluetooth(void)
 
   dot = lv_obj_create(sw);
   lv_obj_set_size(dot, VG_X(28), VG_X(28));
-  lv_obj_align(dot, vg_ble_is_enabled() ? LV_ALIGN_RIGHT_MID :
-               LV_ALIGN_LEFT_MID, vg_ble_is_enabled() ? -VG_X(6) :
+  lv_obj_align(dot, ble_switch_on ? LV_ALIGN_RIGHT_MID :
+               LV_ALIGN_LEFT_MID, ble_switch_on ? -VG_X(6) :
                VG_X(6), 0);
   lv_obj_set_style_bg_color(dot, lv_color_hex(0xffffff), LV_PART_MAIN);
   lv_obj_set_style_radius(dot, VG_X(12), LV_PART_MAIN);
@@ -2193,13 +2126,20 @@ static void vg_render_bluetooth(void)
   else if (strcmp(addr, "pending") == 0)
     {
       strlcpy(addr, "地址未就绪", sizeof(addr));
-    }
+  }
+
+  vg_ble_get_device_name(name, sizeof(name));
+  label = vg_label(root, "蓝牙名称", VG_X(204), LV_TEXT_ALIGN_LEFT,
+                   VG_COLOR_MUTED);
+  lv_obj_align(label, LV_ALIGN_TOP_LEFT, VG_X(18), VG_Y(74));
+  label = vg_label(root, name, VG_X(204), LV_TEXT_ALIGN_LEFT, VG_COLOR_TEXT);
+  lv_obj_align(label, LV_ALIGN_TOP_LEFT, VG_X(18), VG_Y(108));
 
   label = vg_label(root, "本机 MAC 地址", VG_X(204), LV_TEXT_ALIGN_LEFT,
                    VG_COLOR_MUTED);
-  lv_obj_align(label, LV_ALIGN_TOP_LEFT, VG_X(18), VG_Y(112));
+  lv_obj_align(label, LV_ALIGN_TOP_LEFT, VG_X(18), VG_Y(150));
   label = vg_label(root, addr, VG_X(204), LV_TEXT_ALIGN_LEFT, VG_COLOR_TEXT);
-  lv_obj_align(label, LV_ALIGN_TOP_LEFT, VG_X(18), VG_Y(146));
+  lv_obj_align(label, LV_ALIGN_TOP_LEFT, VG_X(18), VG_Y(184));
 }
 
 
@@ -2369,10 +2309,8 @@ static void vg_imu_timer_cb(lv_timer_t *timer)
       return;
     }
 
-  /* Touch and IMU share I2C1 and require different pin groups.  Keep this
-   * access in LVGL's thread so the input read timer can never run while the
-   * IMU pin group is selected.  The guarded switch is kept short (about
-   * 1.5 ms total), so this serialization no longer causes visible UI lag.
+  /* IMU now uses the kernel LSM6DSL driver on its dedicated I2C3 bus, so
+   * this read no longer needs any pinmux switching or shared-bus locking.
    */
 
   ret = vg_imu_read_guarded(&g_vg.imu, &imu_sample);
@@ -2428,15 +2366,12 @@ static void vg_buttons_poll(void)
     }
 
   if ((sample & VG_SOS_BUTTON_BIT) &&
-      !(g_vg.last_buttons & VG_SOS_BUTTON_BIT))
+      g_vg.button_down_ms == 0)
     {
       g_vg.button_down_ms = vg_uptime_ms();
+      g_vg.button_release_candidate_ms = 0;
       g_vg.button_long_handled = false;
-      if (g_vg.state == VG_STATE_GUARDING)
-        {
-          g_vg.sos_prompt_visible = true;
-          vg_render_sos_prompt();
-        }
+      printf("VelaGuard UI: SOS button down\n");
     }
 
   if ((sample & VG_SOS_BUTTON_BIT) && !g_vg.button_long_handled &&
@@ -2445,6 +2380,8 @@ static void vg_buttons_poll(void)
     {
       g_vg.button_long_handled = true;
       g_vg.sos_prompt_visible = false;
+      printf("VelaGuard UI: SOS long press threshold reached elapsed=%llu ms\n",
+             (unsigned long long)(vg_uptime_ms() - g_vg.button_down_ms));
       if (g_vg.state == VG_STATE_GUARDING)
         {
           vg_trigger_event(VG_EVENT_MANUAL_SOS);
@@ -2454,14 +2391,27 @@ static void vg_buttons_poll(void)
   if (!(sample & VG_SOS_BUTTON_BIT) &&
       (g_vg.last_buttons & VG_SOS_BUTTON_BIT))
     {
-      if (!g_vg.button_long_handled && g_vg.sos_prompt_visible)
+      if (g_vg.button_release_candidate_ms == 0)
         {
-          g_vg.sos_prompt_visible = false;
-          vg_render_home();
+          g_vg.button_release_candidate_ms = vg_uptime_ms();
         }
+      else if (vg_uptime_ms() - g_vg.button_release_candidate_ms >=
+               VG_BUTTON_RELEASE_DEBOUNCE_MS)
+        {
+          if (!g_vg.button_long_handled && g_vg.sos_prompt_visible)
+            {
+              g_vg.sos_prompt_visible = false;
+              vg_render_home();
+            }
 
-      g_vg.button_down_ms = 0;
-      g_vg.button_long_handled = false;
+          g_vg.button_down_ms = 0;
+          g_vg.button_release_candidate_ms = 0;
+          g_vg.button_long_handled = false;
+        }
+    }
+  else if (sample & VG_SOS_BUTTON_BIT)
+    {
+      g_vg.button_release_candidate_ms = 0;
     }
 
   g_vg.last_buttons = sample;
@@ -2532,7 +2482,12 @@ static void vg_tick_cb(lv_timer_t *timer)
   if (g_vg.active.type == VG_EVENT_MANUAL_SOS &&
       g_vg.countdown_arc != NULL)
     {
-      int arc_value = (int)((elapsed % 1000) * 100 / 1000);
+      int arc_value = (int)((elapsed * 100) / total_ms);
+
+      if (arc_value > 100)
+        {
+          arc_value = 100;
+        }
 
       lv_arc_set_value(g_vg.countdown_arc, arc_value);
     }
@@ -2595,124 +2550,6 @@ static int vg_wait_for_device(const char *path, unsigned int timeout_ms)
   return 0;
 }
 
-#ifdef CONFIG_INPUT_TOUCHSCREEN
-static const char *vg_touch_flags(uint8_t flags)
-{
-  if (flags & TOUCH_DOWN)
-    {
-      return "DOWN";
-    }
-
-  if (flags & TOUCH_MOVE)
-    {
-      return "MOVE";
-    }
-
-  if (flags & TOUCH_UP)
-    {
-      return "UP";
-    }
-
-  return "NONE";
-}
-
-static int vg_touch_selftest(const char *path, int samples)
-{
-  struct touch_sample_s sample;
-  struct pollfd pfd;
-  uint64_t last_ms = 0;
-  uint64_t before_ms;
-  uint64_t after_ms;
-  ssize_t nread;
-  int fd;
-  int ret;
-  int count = 0;
-
-  if (samples < 1)
-    {
-      samples = 40;
-    }
-
-  ret = vg_wait_for_device(path, VG_DEVICE_WAIT_MS);
-  if (ret < 0)
-    {
-      return ret;
-    }
-
-  fd = open(path, O_RDONLY | O_NONBLOCK);
-  if (fd < 0)
-    {
-      printf("VelaGuard TOUCH TEST: open %s failed errno=%d\n", path,
-             errno);
-      return -errno;
-    }
-
-  printf("VelaGuard TOUCH TEST: reading %d samples from %s\n",
-         samples, path);
-  while (count < samples)
-    {
-      memset(&sample, 0, sizeof(sample));
-      pfd.fd = fd;
-      pfd.events = POLLIN;
-      pfd.revents = 0;
-
-      ret = poll(&pfd, 1, 2000);
-      if (ret == 0)
-        {
-          printf("VelaGuard TOUCH TEST: idle timeout count=%d\n", count);
-          continue;
-        }
-      else if (ret < 0)
-        {
-          if (errno == EINTR)
-            {
-              continue;
-            }
-
-          printf("VelaGuard TOUCH TEST: poll failed errno=%d\n", errno);
-          close(fd);
-          return -errno;
-        }
-
-      before_ms = vg_uptime_ms();
-      nread = read(fd, &sample, sizeof(sample));
-      after_ms = vg_uptime_ms();
-      if (nread < 0)
-        {
-          if (errno == EAGAIN || errno == EINTR)
-            {
-              continue;
-            }
-
-          printf("VelaGuard TOUCH TEST: read failed errno=%d\n", errno);
-          close(fd);
-          return -errno;
-        }
-
-      if (nread != sizeof(sample))
-        {
-          printf("VelaGuard TOUCH TEST: short read=%zd expected=%zu\n",
-                 nread, sizeof(sample));
-          continue;
-        }
-
-      printf("VelaGuard TOUCH TEST: #%d event=%s flags=0x%02x points=%ld x=%d y=%d dt=%llums read=%llums ts=%llu\n",
-             count + 1, vg_touch_flags(sample.point[0].flags),
-             sample.point[0].flags, (long)sample.npoints,
-             sample.point[0].x, sample.point[0].y,
-             last_ms == 0 ? 0 :
-             (unsigned long long)(after_ms - last_ms),
-             (unsigned long long)(after_ms - before_ms),
-             (unsigned long long)sample.point[0].timestamp);
-      last_ms = after_ms;
-      count++;
-    }
-
-  close(fd);
-  return 0;
-}
-#endif
-
 static void vg_audio_headless_loop(void)
 {
   unsigned int report_ms = 0;
@@ -2720,8 +2557,6 @@ static void vg_audio_headless_loop(void)
   printf("VelaGuard: UI unavailable; audio diagnostics remain active.\n");
   for (; ; )
     {
-      vg_ble_process();
-
       if (g_vg.audio_ready &&
           vg_audio_capture_level(&g_vg.audio_level, &g_vg.audio_sequence,
                                  NULL))
@@ -2743,124 +2578,6 @@ static void vg_audio_headless_loop(void)
     }
 }
 
-static enum vg_event_type_e vg_parse_demo_type(const char *arg)
-{
-  if (strcmp(arg, "fall") == 0)
-    {
-      return VG_EVENT_FALL;
-    }
-
-  if (strcmp(arg, "sound") == 0)
-    {
-      return VG_EVENT_SOUND;
-    }
-
-  if (strcmp(arg, "voice") == 0)
-    {
-      return VG_EVENT_VOICE;
-    }
-
-  if (strcmp(arg, "sos") == 0)
-    {
-      return VG_EVENT_MANUAL_SOS;
-    }
-
-  return VG_EVENT_FALL;
-}
-
-static void vg_usage(void)
-{
-  printf("用法: velaguard [--demo fall|sound|voice|sos] [--imu-scan] [--imu-test [n]] [--fall-watch [seconds]] [--touch-test [n]]\n");
-}
-
-static bool vg_arg_is_number(const char *arg)
-{
-  return arg != NULL && arg[0] >= '0' && arg[0] <= '9';
-}
-
-static void vg_cmd_args_init(struct vg_cmd_args_s *args)
-{
-  memset(args, 0, sizeof(*args));
-  args->initial_event = VG_EVENT_FALL;
-  args->imu_samples = 30;
-  args->fall_watch_seconds = 30;
-  args->touch_samples = 40;
-}
-
-static int vg_parse_args(int argc, FAR char *argv[],
-                         struct vg_cmd_args_s *args)
-{
-  int i;
-
-  vg_cmd_args_init(args);
-
-  for (i = 1; i < argc; i++)
-    {
-      if (strcmp(argv[i], "--help") == 0)
-        {
-          vg_usage();
-          return 1;
-        }
-      else if (strcmp(argv[i], "--demo") == 0 && i + 1 < argc)
-        {
-          args->initial_event = vg_parse_demo_type(argv[++i]);
-          args->has_initial_event = true;
-        }
-      else if (strcmp(argv[i], "--imu-test") == 0)
-        {
-          args->imu_test = true;
-          if (i + 1 < argc && vg_arg_is_number(argv[i + 1]))
-            {
-              args->imu_samples = atoi(argv[++i]);
-              if (args->imu_samples < 1)
-                {
-                  args->imu_samples = 1;
-                }
-            }
-        }
-      else if (strcmp(argv[i], "--imu-scan") == 0)
-        {
-          args->imu_scan = true;
-        }
-      else if (strcmp(argv[i], "--fall-watch") == 0)
-        {
-          args->fall_watch = true;
-          if (i + 1 < argc && vg_arg_is_number(argv[i + 1]))
-            {
-              args->fall_watch_seconds = atoi(argv[++i]);
-              if (args->fall_watch_seconds < 1)
-                {
-                  args->fall_watch_seconds = 30;
-                }
-            }
-        }
-      else if (strcmp(argv[i], "--touch-test") == 0)
-        {
-#ifdef CONFIG_INPUT_TOUCHSCREEN
-          args->touch_test = true;
-          if (i + 1 < argc && vg_arg_is_number(argv[i + 1]))
-            {
-              args->touch_samples = atoi(argv[++i]);
-              if (args->touch_samples < 1)
-                {
-                  args->touch_samples = 40;
-                }
-            }
-#else
-          printf("VelaGuard: touch test unavailable; INPUT_TOUCHSCREEN disabled\n");
-          return -EINVAL;
-#endif
-        }
-      else
-        {
-          vg_usage();
-          return -EINVAL;
-        }
-    }
-
-  return 0;
-}
-
 /****************************************************************************
  * Public Functions
  ****************************************************************************/
@@ -2869,49 +2586,11 @@ int main(int argc, FAR char *argv[])
 {
   lv_nuttx_dsc_t info;
   lv_nuttx_result_t result;
-  struct vg_cmd_args_s args;
   bool input_ready = false;
-  int ret;
   int warmup;
 
-  ret = vg_parse_args(argc, argv, &args);
-  if (ret > 0)
-    {
-      return 0;
-    }
-  else if (ret < 0)
-    {
-      return 1;
-    }
-
-  if (args.imu_scan)
-    {
-      return vg_imu_scan() < 0 ? 1 : 0;
-    }
-
-  if (args.imu_test)
-    {
-      return vg_imu_selftest(CONFIG_CONTEST2026_148_VELAGUARD_IMU_DEVPATH,
-                             args.imu_samples) < 0 ? 1 : 0;
-    }
-
-  if (args.fall_watch)
-    {
-      return vg_imu_fall_watch(CONFIG_CONTEST2026_148_VELAGUARD_IMU_DEVPATH,
-                               args.fall_watch_seconds) < 0 ? 1 : 0;
-    }
-
-#ifdef CONFIG_INPUT_TOUCHSCREEN
-  if (args.touch_test)
-    {
-#  ifdef NEED_BOARDINIT
-      boardctl(BOARDIOC_INIT, 0);
-#  endif
-      return vg_touch_selftest(
-               CONFIG_CONTEST2026_148_VELAGUARD_INPUT_DEVPATH,
-               args.touch_samples) < 0 ? 1 : 0;
-    }
-#endif
+  (void)argc;
+  (void)argv;
 
   memset(&g_vg, 0, sizeof(g_vg));
   g_vg.state = VG_STATE_GUARDING;
@@ -2963,6 +2642,15 @@ int main(int argc, FAR char *argv[])
     VG_DEVICE_WAIT_MS) == 0;
 #endif
 
+#ifdef CONFIG_CONTEST2026_148_VELAGUARD_HEADLESS
+  printf("VelaGuard: headless BLE isolation mode\n");
+  for (;;)
+    {
+      vg_audio_process();
+      usleep(1000000);
+    }
+#endif
+
   lv_init();
   lv_nuttx_dsc_init(&info);
 
@@ -3008,13 +2696,6 @@ int main(int argc, FAR char *argv[])
   printf("VelaGuard: started. JSON events are printed as VELAGUARD_EVENT.\n");
   fflush(stdout);
 
-  ret = task_create("vg_ble", CONFIG_CONTEST2026_148_VELAGUARD_PRIORITY,
-                    VG_BLE_TASK_STACKSIZE, vg_ble_service_task, NULL);
-  if (ret < 0)
-    {
-      printf("VelaGuard BLE: service task start failed: %d\n", errno);
-    }
-
   vg_render_home();
   vg_imu_ui_init();
   g_vg.tick_timer = lv_timer_create(vg_tick_cb, VG_TICK_PERIOD_MS, NULL);
@@ -3027,18 +2708,21 @@ int main(int argc, FAR char *argv[])
       usleep(20000);
     }
 
-  if (args.has_initial_event)
+  /* Keep the official LVGL bring-up order intact.  Start the independent BLE
+   * worker only after the display has completed its first refresh. */
+  if (vg_ble_init() < 0)
     {
-      vg_trigger_event(args.initial_event);
+      printf("VelaGuard BLE: worker start failed\n");
     }
 
   for (; ; )
     {
-      vg_ble_process_ui();
       vg_audio_process();
 #ifdef CONFIG_CONTEST2026_148_AUDIO_FEEDBACK
       vg_audio_feedback_process();
 #endif
+      vg_ble_process();
+      vg_ble_process_time();
 
       uint32_t idle = lv_timer_handler();
 

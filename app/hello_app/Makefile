@@ -34,7 +34,7 @@ CFLAGS += ${INCDIR_PREFIX}$(TOPDIR)$(DELIM)..$(DELIM)vendor$(DELIM)sifli$(DELIM)
 CFLAGS += ${INCDIR_PREFIX}$(TOPDIR)$(DELIM)..$(DELIM)vendor$(DELIM)sifli$(DELIM)chips$(DELIM)sf32lb52
 CFLAGS += ${INCDIR_PREFIX}$(TOPDIR)$(DELIM)..$(DELIM)vendor$(DELIM)sifli$(DELIM)chips$(DELIM)sf32lb52$(DELIM)include
 CFLAGS += ${INCDIR_PREFIX}$(TOPDIR)$(DELIM)..$(DELIM)vendor$(DELIM)sifli$(DELIM)chips$(DELIM)boards$(DELIM)include
-CFLAGS += ${INCDIR_PREFIX}$(APPDIR)$(DELIM)external$(DELIM)zblue$(DELIM)zblue$(DELIM)include
-CFLAGS += ${INCDIR_PREFIX}$(APPDIR)$(DELIM)external$(DELIM)zblue$(DELIM)zblue$(DELIM)port$(DELIM)include
+CFLAGS += ${INCDIR_PREFIX}$(TOPDIR)$(DELIM)..$(DELIM)frameworks$(DELIM)connectivity$(DELIM)bluetooth$(DELIM)framework$(DELIM)include
+CFLAGS += ${INCDIR_PREFIX}$(APPDIR)$(DELIM)system$(DELIM)libuv$(DELIM)libuv$(DELIM)include
 
 include $(APPDIR)/Application.mk
