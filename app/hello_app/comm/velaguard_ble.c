@@ -31,6 +31,7 @@
 #define VG_BLE_ADDR_RETRY_MS         1000
 #define VG_BLE_ADV_RETRY_SKIP       250
 #define VG_BLE_ADV_RESTART_SKIP     125
+#define VG_BLE_ADV_START_TIMEOUT_MS 3000
 
 #define VG_BLE_UUID_BYTES(id) \
   (id), 0x00, 0x47, 0x56, 0x64, 0x72, 0x61, 0x93, \
@@ -76,6 +77,8 @@ static bool g_vg_service_registered;
 static bool g_vg_attr_table_added;
 static bool g_vg_advertising;
 static bool g_vg_adv_starting;
+static volatile bool g_vg_adv_stop_pending;
+static volatile bool g_vg_adv_stop_inflight;
 static bool g_vg_call_pending;
 static bool g_vg_local_addr_default;
 static bool g_vg_local_addr_unavailable_logged;
@@ -95,6 +98,7 @@ static uint64_t g_vg_last_status_notify_ms;
 static uint64_t g_vg_notify_ready_after_ms;
 static uint64_t g_vg_last_diag_ms;
 static uint64_t g_vg_last_local_addr_attempt_ms;
+static uint64_t g_vg_adv_start_requested_ms;
 static uint32_t g_vg_test_counter;
 static uint8_t g_vg_last_test_value;
 static uint16_t g_vg_event_ccc_value;
@@ -459,7 +463,15 @@ static void vg_ble_gatts_connected(gatts_handle_t srv_handle,
   g_vg_connected = true;
   g_vg_advertising = false;
   g_vg_adv_starting = false;
-  g_vg_advertiser = NULL;
+  g_vg_adv_start_requested_ms = 0;
+  /* A legacy advertiser is stopped by the controller when it accepts a
+   * connection, but the Framework still owns its advertising slot until it
+   * receives an explicit stop request.  Defer that request to our main task:
+   * this callback runs on the Framework callback path. */
+  if (g_vg_advertiser != NULL)
+    {
+      g_vg_adv_stop_pending = true;
+    }
   if (addr != NULL)
     {
       g_vg_peer_addr = *addr;
@@ -491,7 +503,6 @@ static void vg_ble_gatts_disconnected(gatts_handle_t srv_handle,
   g_vg_last_test_notify_ms = 0;
   g_vg_advertising = false;
   g_vg_adv_starting = false;
-  g_vg_advertiser = NULL;
 
   if (g_vg_enabled)
     {
@@ -572,6 +583,7 @@ static void vg_ble_adv_started(bt_advertiser_t *adv, uint8_t adv_id,
       g_vg_advertiser = adv;
       g_vg_advertising = true;
       g_vg_adv_starting = false;
+      g_vg_adv_start_requested_ms = 0;
       printf("VelaGuard BLE: advertising as %s id=%u\n",
              VG_BLE_NAME, adv_id);
       return;
@@ -580,6 +592,9 @@ static void vg_ble_adv_started(bt_advertiser_t *adv, uint8_t adv_id,
   g_vg_advertiser = NULL;
   g_vg_advertising = false;
   g_vg_adv_starting = false;
+  g_vg_adv_stop_pending = false;
+  g_vg_adv_stop_inflight = false;
+  g_vg_adv_start_requested_ms = 0;
   if (g_vg_enabled && !g_vg_connected)
     {
       g_vg_start_advertising_pending = true;
@@ -591,10 +606,16 @@ static void vg_ble_adv_started(bt_advertiser_t *adv, uint8_t adv_id,
 
 static void vg_ble_adv_stopped(bt_advertiser_t *adv, uint8_t adv_id)
 {
-  (void)adv;
-  g_vg_advertiser = NULL;
+  if (adv == g_vg_advertiser)
+    {
+      g_vg_advertiser = NULL;
+    }
+
   g_vg_advertising = false;
   g_vg_adv_starting = false;
+  g_vg_adv_stop_pending = false;
+  g_vg_adv_stop_inflight = false;
+  g_vg_adv_start_requested_ms = 0;
   printf("VelaGuard BLE: advertising stopped id=%u\n", adv_id);
 }
 
@@ -684,7 +705,8 @@ static int vg_ble_start_advertising(void)
       return -ENODEV;
     }
 
-  if (g_vg_connected || g_vg_advertising || g_vg_adv_starting)
+  if (g_vg_connected || g_vg_advertising || g_vg_adv_starting ||
+      g_vg_adv_stop_pending || g_vg_adv_stop_inflight)
     {
       return 0;
     }
@@ -707,6 +729,7 @@ static int vg_ble_start_advertising(void)
     }
 
   g_vg_adv_starting = true;
+  g_vg_adv_start_requested_ms = vg_ble_monotonic_ms();
   printf("VelaGuard BLE: advertising start requested\n");
   return 0;
 }
@@ -778,6 +801,42 @@ void vg_ble_process(void)
       return;
     }
 
+  now_ms = vg_ble_monotonic_ms();
+  if (g_vg_adv_stop_pending)
+    {
+      bt_advertiser_t *adv = g_vg_advertiser;
+
+      g_vg_adv_stop_pending = false;
+      if (adv != NULL)
+        {
+          g_vg_adv_stop_inflight = true;
+          printf("VelaGuard BLE: releasing advertising slot after connection\n");
+          bt_le_stop_advertising(g_vg_bt, adv);
+        }
+    }
+
+  if (g_vg_adv_starting && g_vg_adv_start_requested_ms != 0 &&
+      now_ms - g_vg_adv_start_requested_ms >= VG_BLE_ADV_START_TIMEOUT_MS)
+    {
+      /* A start request is accepted synchronously, but its result is
+       * delivered on the asynchronous Framework callback path.  Do not let
+       * one lost callback permanently suppress all later advertising retries.
+       */
+      printf("VelaGuard BLE: advertising start callback timeout; releasing slot\n");
+      g_vg_advertising = false;
+      g_vg_adv_starting = false;
+      g_vg_adv_start_requested_ms = 0;
+      if (g_vg_advertiser != NULL)
+        {
+          g_vg_adv_stop_pending = true;
+        }
+      else
+        {
+          g_vg_start_advertising_pending = true;
+          g_vg_adv_retry_skip = VG_BLE_ADV_RETRY_SKIP;
+        }
+    }
+
   if (!g_vg_adapter_ready && vg_ble_framework_ready())
     {
       g_vg_adapter_ready = true;
@@ -796,7 +855,8 @@ void vg_ble_process(void)
     }
 
   if (g_vg_start_advertising_pending && g_vg_adapter_ready &&
-      g_vg_service_registered && !g_vg_connected)
+      g_vg_service_registered && !g_vg_connected &&
+      !g_vg_adv_stop_pending && !g_vg_adv_stop_inflight)
     {
       if (g_vg_adv_retry_skip > 0)
         {
@@ -815,7 +875,6 @@ void vg_ble_process(void)
         }
     }
 
-  now_ms = vg_ble_monotonic_ms();
   if (strcmp(g_vg_local_addr, "pending") == 0)
     {
       vg_ble_cache_local_address();
@@ -1040,6 +1099,8 @@ int vg_ble_set_enabled(bool enabled)
   g_vg_call_pending = false;
   g_vg_advertising = false;
   g_vg_adv_starting = false;
+  g_vg_adv_stop_pending = false;
+  g_vg_adv_stop_inflight = false;
 
   if (g_vg_connected && g_vg_peer_addr_valid && g_vg_gatts != NULL)
     {

@@ -29,6 +29,10 @@ velaguard main loop
 正常断开流程：
 
 ```text
+phone connects
+  -> defer Framework advertising-object cleanup to VelaGuard main loop
+  -> release the legacy advertising slot, even though the controller has
+     already stopped advertising for the connection
 phone disconnect
   -> clear connected / CCCD state
   -> keep service registered
@@ -36,6 +40,9 @@ phone disconnect
 ```
 
 普通断线重连不会重新注册 Service，也不会重复初始化 Bluetooth framework。
+设备会等待控制器完成链路拆除、并确认上一个 advertising slot 已释放后再恢复广播；这避免
+legacy 广播在连接后自动停止却仍占用 Framework slot，导致后续断线无法重新被扫描。若
+Framework 未返回广播启动结果，3 秒后会先释放该请求的 slot，再按退避策略重试。
 
 SOS 的本地告警页面与 BLE `CALL_REQUEST` 上报不依赖麦克风采集。当前配置保留 WAV
 扬声器提示，关闭 ADC 麦克风采集和语音触发；这不影响服务发现、状态心跳、校时或紧急事件

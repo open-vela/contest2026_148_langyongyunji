@@ -1,0 +1,8 @@
+diff --git a/service/stacks/zephyr/sal_le_advertise_interface.c b/service/stacks/zephyr/sal_le_advertise_interface.c
+--- a/service/stacks/zephyr/sal_le_advertise_interface.c
++++ b/service/stacks/zephyr/sal_le_advertise_interface.c
+@@ -20,0 +21 @@
++#include <errno.h>
+@@ -565 +566 @@ static void STACK_CALL(stop_adv)(void* args)
+-        if (ret) {
++        if (ret && ret != -EALREADY) {
