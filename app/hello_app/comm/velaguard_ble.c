@@ -27,7 +27,6 @@
 #define VG_BLE_HEARTBEAT_MS         1000
 #define VG_BLE_TEST_NOTIFY_MS       1000
 #define VG_BLE_CCC_SETTLE_MS         1500
-#define VG_BLE_DIAG_PERIOD_MS        2000
 #define VG_BLE_ADDR_RETRY_MS         1000
 #define VG_BLE_ADV_RETRY_SKIP       250
 #define VG_BLE_ADV_RESTART_SKIP     125
@@ -96,7 +95,6 @@ static uint64_t g_vg_pending_time_sync_ms;
 static uint64_t g_vg_last_test_notify_ms;
 static uint64_t g_vg_last_status_notify_ms;
 static uint64_t g_vg_notify_ready_after_ms;
-static uint64_t g_vg_last_diag_ms;
 static uint64_t g_vg_last_local_addr_attempt_ms;
 static uint64_t g_vg_adv_start_requested_ms;
 static uint32_t g_vg_test_counter;
@@ -541,8 +539,11 @@ static void vg_ble_notify_complete(gatts_handle_t srv_handle,
   (void)srv_handle;
   (void)addr;
 
-  printf("VelaGuard BLE: notify complete handle=0x%04x status=%d\n",
-         attr_handle, status);
+  if (status != GATT_STATUS_SUCCESS)
+    {
+      printf("VelaGuard BLE: notify failed handle=0x%04x status=%d\n",
+             attr_handle, status);
+    }
 }
 
 static void vg_ble_mtu_changed(gatts_handle_t srv_handle,
@@ -890,17 +891,6 @@ void vg_ble_process(void)
 
   notifications_ready = now_ms >= g_vg_notify_ready_after_ms;
 
-  if (g_vg_last_diag_ms == 0 ||
-      now_ms - g_vg_last_diag_ms >= VG_BLE_DIAG_PERIOD_MS)
-    {
-      g_vg_last_diag_ms = now_ms;
-      printf("VelaGuard BLE: poll conn=%d status_ccc=%d peer=%d service=%d notify_ready=%d\n",
-             g_vg_connected ? 1 : 0, g_vg_status_notify_enabled ? 1 : 0,
-             g_vg_peer_addr_valid ? 1 : 0,
-             g_vg_service_registered ? 1 : 0,
-             notifications_ready ? 1 : 0);
-    }
-
   if (notifications_ready && g_vg_connected && g_vg_status_notify_enabled &&
       g_vg_peer_addr_valid && g_vg_service_registered)
     {
@@ -913,14 +903,15 @@ void vg_ble_process(void)
           /* Framework GATT calls stay in the VelaGuard task.  Its callbacks
            * and all outgoing notifications are then serialized. */
           g_vg_last_status_notify_ms = now_ms;
-          printf("VelaGuard BLE: STATUS heartbeat attempt value=%u\n",
-                 status_value);
           status = bt_gatts_notify(g_vg_gatts, &g_vg_peer_addr,
                                    VG_BLE_HANDLE_STATUS, &status_value,
                                    sizeof(status_value));
           ret = vg_ble_status_to_errno(status);
-          printf("VelaGuard BLE: STATUS heartbeat value=%u result=%d status=%d\n",
-                 status_value, ret, status);
+          if (ret < 0)
+            {
+              printf("VelaGuard BLE: STATUS heartbeat failed value=%u ret=%d status=%d\n",
+                     status_value, ret, status);
+            }
         }
     }
 
