@@ -1,10 +1,10 @@
 diff --git a/chips/sf32lb52/sf32lb52_bt_adapter.c b/chips/sf32lb52/sf32lb52_bt_adapter.c
 --- a/chips/sf32lb52/sf32lb52_bt_adapter.c
 +++ b/chips/sf32lb52/sf32lb52_bt_adapter.c
-@@ -319,4 +319,29 @@ static size_t sf32lb52_bt_ring_write(struct circular_buf *tx_ring,
+@@ -321,6 +321,31 @@ static size_t sf32lb52_bt_ring_write(struct circular_buf *tx_ring,
    return len;
  }
-+
+
 +static bool sf32lb52_bt_tx_ring_valid(struct circular_buf *tx_ring)
 +{
 +  uint32_t rd_idx = CB_GET_PTR_IDX(tx_ring->read_idx_mirror);
@@ -29,17 +29,22 @@ diff --git a/chips/sf32lb52/sf32lb52_bt_adapter.c b/chips/sf32lb52/sf32lb52_bt_a
 +                  (uintptr_t)tx_ring + sizeof(*tx_ring));
 +  __DSB();
 +}
- 
++
  static void sf32lb52_bt_log_packet(const char *direction,
-@@ -915,4 +937,5 @@ int sf32lb52_host_send_packet(const uint8_t *data, uint16_t len)
+                                    const uint8_t *data, size_t len,
+                                    uint32_t rd_ptr, uint32_t wr_ptr)
+@@ -887,6 +912,7 @@ int sf32lb52_host_send_packet(const uint8_t *data, uint16_t len)
+   uint32_t tick_count;
    size_t written;
    uint32_t wr_ptr;
-   bool acl_write_logged;
 +  bool tx_ring_recovered;
    int ret;
-@@ -956,2 +979,14 @@ int sf32lb52_host_send_packet(const uint8_t *data, uint16_t len)
+
+   if (data == NULL || len == 0)
+@@ -909,6 +935,18 @@ int sf32lb52_host_send_packet(const uint8_t *data, uint16_t len)
+   start_time = HAL_GetTick();
+   tick_count = 0;
    wr_ptr = 0;
-   acl_write_logged = false;
 +  tx_ring_recovered = false;
 +
 +  if (!sf32lb52_bt_tx_ring_valid(tx_ring))
@@ -52,15 +57,13 @@ diff --git a/chips/sf32lb52/sf32lb52_bt_adapter.c b/chips/sf32lb52/sf32lb52_bt_a
 +      sf32lb52_bt_reset_tx_ring(tx_ring);
 +      tx_ring_recovered = true;
 +    }
-@@ -976,4 +1011,24 @@ int sf32lb52_host_send_packet(const uint8_t *data, uint16_t len)
+
+   ret = sf32lb52_bt_wait_tx_idle(tx_ring);
    if (ret < 0)
-     {
-       goto unlock;
-     }
-+
-+  up_invalidate_dcache((uintptr_t)SF32LB52_BT_TX_BUF_ADDR,
-+                      (uintptr_t)SF32LB52_BT_TX_BUF_ADDR +
-+                      sizeof(*tx_ring));
+@@ -920,6 +958,23 @@ int sf32lb52_host_send_packet(const uint8_t *data, uint16_t len)
+                        (uintptr_t)SF32LB52_BT_TX_BUF_ADDR +
+                        sizeof(*tx_ring));
+
 +  if (!sf32lb52_bt_tx_ring_valid(tx_ring))
 +    {
 +      if (tx_ring_recovered)
@@ -77,3 +80,7 @@ diff --git a/chips/sf32lb52/sf32lb52_bt_adapter.c b/chips/sf32lb52/sf32lb52_bt_a
 +      sf32lb52_bt_reset_tx_ring(tx_ring);
 +      tx_ring_recovered = true;
 +    }
++
+   for (;;)
+     {
+       irqstate_t flags;

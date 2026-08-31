@@ -81,13 +81,12 @@ logs/               AI Coding 日志
 
 当前实测链路已恢复：设备可以广播，App 可以连接并完成 GATT 服务发现，订阅后的状态心跳
 持续发送。H4 TX ring 曾出现元数据异常并在 `memcpy` 处触发 HardFault；当前
-`0015-recover-invalid-sf32lb52-h4-tx-ring.patch` 对 ring 边界、D-cache 和一次性恢复做了
-保护，异常仍会保留 warning/error 日志。`0010-chore-sf32lb52-h4-reduce-diagnostic-log-noise.patch`
-关闭 H4 逐包、ACL 原始字节和 TX 阶段日志，避免运行期刷屏；它不关闭硬件错误、发送超时或
-TX ring 异常日志。`0012-fix-sf32lb52-reserve-hcpu-mailbox-from-heap.patch` 将 HCPU 尾部
-1 KiB mailbox 从 NuttX 堆中排除，避免 BLE IPC 覆盖堆元数据。若今后服务发现再次异常，临时打开两个 H4 源文件中的 `SF32LB52_BT_TRACE` 和
-`SF32LB52_BT_ACL_STAGE_TRACE` 后，按 H4 RX -> Framework/ATT -> H4 TX -> App 回调的顺序
-定位，不先修改 UUID、MTU 或 App 协议。
+`0010-fix-sf32lb52-reserve-hcpu-mailbox-from-heap.patch` 将 HCPU 尾部 1 KiB mailbox
+从 NuttX 堆中排除，避免 BLE IPC 覆盖堆元数据。紧随其后的
+`0011-fix-sf32lb52-h4-tx-ring-recovery.patch` 对 ring 边界、D-cache 和一次性恢复做了
+保护，异常仍会保留 warning/error 日志。旧的 H4 逐包诊断补丁不在发布链中；若服务发现
+再次异常，应基于当前 vendor 源码临时增加日志，并按 H4 RX -> Framework/ATT -> H4 TX ->
+App 回调的顺序定位，不先修改 UUID、MTU 或 App 协议。
 
 详细 BLE 协议见 [app/hello_app/comm/README.md](app/hello_app/comm/README.md)。
 

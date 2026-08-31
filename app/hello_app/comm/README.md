@@ -65,9 +65,9 @@ SOS 的本地告警页面与 BLE `CALL_REQUEST` 上报不依赖麦克风采集�
 - `vendor/sifli`、NuttX 和 Framework 的底层改动不能直接提交到主仓库；必须放到
   `contest2026_148_langyongyunji/patches/`，由 `scripts/apply_patches.sh` 统一应用。
   `0007`、`0008` H4 patch 属于已验证链路，必须保留并在编译日志中确认已应用。
-  `0015` 负责 TX ring 边界、D-cache 和一次性恢复保护；`0010` 只关闭逐包和 ACL 阶段
-  诊断日志，保留 ring 异常、发送超时和控制器硬件错误。`0012` 将 HCPU 尾部的 mailbox
-  内存排除在 NuttX 堆之外，避免 BLE IPC 覆盖堆元数据。`framework/0002` 为单 service
+  `0010` 将 HCPU 尾部的 mailbox 内存排除在 NuttX 堆之外，避免 BLE IPC 覆盖堆元数据；
+  `0011` 负责 TX ring 边界、D-cache 和一次性恢复保护。H4 逐包诊断补丁不在发布链中。
+  `framework/0002` 为单 service
   GATT Server 提供无链表的 ATT service 查找保护；`framework/0003` 使 Peripheral-only
   设备的 LE identity address 能通过 Framework 的本机地址查询接口返回。
 
