@@ -1,0 +1,35 @@
+diff --git a/subsys/bluetooth/host/conn.c b/subsys/bluetooth/host/conn.c
+index 80e7721..98d631e 100644
+--- a/subsys/bluetooth/host/conn.c
++++ b/subsys/bluetooth/host/conn.c
+@@ -4219,6 +4219,20 @@ int bt_le_set_auto_conn_mc(uint8_t dev_id, const bt_addr_le_t *addr,
+ #endif /* !defined(CONFIG_BT_FILTER_ACCEPT_LIST) */
+ #endif /* CONFIG_BT_CENTRAL */
+ 
++#if !defined(CONFIG_BT_CENTRAL)
++int bt_conn_le_create_mc(uint8_t dev_id, const bt_addr_le_t *peer,
++		 const struct bt_conn_le_create_param *create_param,
++		 const struct bt_le_conn_param *conn_param, struct bt_conn **ret_conn)
++{
++	(void)dev_id;
++	(void)peer;
++	(void)create_param;
++	(void)conn_param;
++	(void)ret_conn;
++	return -ENOTSUP;
++}
++#endif /* !CONFIG_BT_CENTRAL */
++
+ int bt_conn_le_conn_update(struct bt_conn *conn,
+ 			   const struct bt_le_conn_param *param)
+ {
+@@ -4510,7 +4524,9 @@ int bt_conn_init(struct bt_dev *hdev)
+ 
+ 	bt_att_init(hdev);
+ 
++#if defined(CONFIG_BT_ECC)
+ 	bt_ecc_init(hdev);
++#endif
+ 
+ 	err = bt_smp_init(hdev);
+ 	if (err) {

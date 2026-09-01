@@ -63,6 +63,6 @@ fi
 
 # --- Step 3: Build ---
 echo "=== [build.sh] Building ==="
-cmake --build "${BUILD_DIR}"
+cmake --build "${BUILD_DIR}" --target nuttx.bin
 
 echo "=== [build.sh] Done: ${BUILD_DIR}/nuttx.bin ==="
