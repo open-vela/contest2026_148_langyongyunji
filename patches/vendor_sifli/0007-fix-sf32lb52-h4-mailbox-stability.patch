@@ -1,0 +1,649 @@
+diff --git a/chips/sf32lb52/sf32lb52_bt_adapter.c b/chips/sf32lb52/sf32lb52_bt_adapter.c
+index d65288c..b69f374 100644
+--- a/chips/sf32lb52/sf32lb52_bt_adapter.c
++++ b/chips/sf32lb52/sf32lb52_bt_adapter.c
+@@ -28,6 +28,7 @@
+ 
+ #include <nuttx/cache.h>
+ #include <nuttx/clock.h>
++#include <nuttx/mutex.h>
+ #include <nuttx/spinlock.h>
+ #include <nuttx/wqueue.h>
+ 
+@@ -74,6 +75,7 @@ struct sf32lb52_bt_env_s
+ 
+ static struct sf32lb52_bt_env_s g_sf32lb52_bt_env;
+ static sf32lb52_bt_status_t g_sf32lb52_bt_status = SF32LB52_BT_STATUS_IDLE;
++static mutex_t g_sf32lb52_bt_tx_lock = NXMUTEX_INITIALIZER;
+ static ipc_hw_q_handle_t g_sf32lb52_bt_tx_hw =
+ {
+   .ch_id = SF32LB52_BT_QID / IPC_HW_QUEUE_NUM,
+@@ -290,7 +292,7 @@ static size_t sf32lb52_bt_ring_write(struct circular_buf *tx_ring,
+ 
+   if (len > space)
+     {
+-      len = space;
++      return 0;
+     }
+ 
+   tail = tx_ring->buffer_size - wr_idx;
+@@ -319,6 +321,68 @@ static size_t sf32lb52_bt_ring_write(struct circular_buf *tx_ring,
+   return len;
+ }
+ 
++static bool sf32lb52_bt_tx_ring_valid(struct circular_buf *tx_ring)
++{
++  uint32_t rd_idx = CB_GET_PTR_IDX(tx_ring->read_idx_mirror);
++  uint32_t wr_idx = CB_GET_PTR_IDX(tx_ring->write_idx_mirror);
++
++  return tx_ring->buffer_size ==
++           (int16_t)(SF32LB52_BT_TX_BUF_SIZE - sizeof(*tx_ring)) &&
++         rd_idx <= (uint32_t)tx_ring->buffer_size &&
++         wr_idx <= (uint32_t)tx_ring->buffer_size;
++}
++
++static void sf32lb52_bt_reset_tx_ring(struct circular_buf *tx_ring)
++{
++  uint8_t *pool = (uint8_t *)(tx_ring + 1);
++  uint8_t *alias_pool =
++      (uint8_t *)((struct circular_buf *)SF32LB52_BT_TX_BUF_ALIAS + 1);
++  int16_t size = SF32LB52_BT_TX_BUF_SIZE - sizeof(*tx_ring);
++
++  circular_buf_wr_init(tx_ring, pool, size);
++  circular_buf_rd_init(tx_ring, alias_pool, size);
++  up_clean_dcache((uintptr_t)tx_ring,
++                  (uintptr_t)tx_ring + sizeof(*tx_ring));
++  __DSB();
++}
++
++#if SF32LB52_BT_TRACE
++static void sf32lb52_bt_log_packet(const char *direction,
++                                   const uint8_t *data, size_t len,
++                                   uint32_t rd_ptr, uint32_t wr_ptr)
++{
++  uint16_t opcode = 0;
++  uint8_t event = 0;
++
++  if (data == NULL || len == 0)
++    {
++      return;
++    }
++
++  if (data[0] == SF32LB52_BT_H4_CMD && len >= 3)
++    {
++      opcode = (uint16_t)data[1] | ((uint16_t)data[2] << 8);
++    }
++  else if (data[0] == 0x04 && len >= 3)
++    {
++      event = data[1];
++      if (event == 0x0e && len >= 6)
++        {
++          opcode = (uint16_t)data[4] | ((uint16_t)data[5] << 8);
++        }
++      else if (event == 0x0f && len >= 7)
++        {
++          opcode = (uint16_t)data[5] | ((uint16_t)data[6] << 8);
++        }
++    }
++
++  syslog(LOG_INFO,
++         "sf32lb52 bt %s: h4=%02x len=%lu event=%02x opcode=%04x rd=%08lx wr=%08lx\n",
++         direction, data[0], (unsigned long)len, event, opcode,
++         (unsigned long)rd_ptr, (unsigned long)wr_ptr);
++}
++#endif
++
+ static size_t sf32lb52_bt_tx_pending(struct circular_buf *tx_ring,
+                                      uint32_t *rd_ptr,
+                                      uint32_t *wr_ptr)
+@@ -384,40 +448,6 @@ static int sf32lb52_bt_wait_tx_idle(struct circular_buf *tx_ring)
+   return OK;
+ }
+ 
+-#if SF32LB52_BT_TRACE
+-static void sf32lb52_bt_log_tx_state(struct circular_buf *tx_ring,
+-                                     const char *tag,
+-                                     uint32_t target_wr)
+-{
+-  uint32_t rd_ptr = 0;
+-  uint32_t wr_ptr = 0;
+-  size_t pending;
+-
+-  pending = sf32lb52_bt_tx_pending(tx_ring, &rd_ptr, &wr_ptr);
+-  syslog(LOG_INFO,
+-         "sf32lb52 bt tx %s: target=%08lx rd=%08lx wr=%08lx pending=%lu\n",
+-         tag,
+-         (unsigned long)target_wr,
+-         (unsigned long)rd_ptr,
+-         (unsigned long)wr_ptr,
+-         (unsigned long)pending);
+-}
+-#endif
+-
+-static size_t sf32lb52_bt_tx_chunk_len(const uint8_t *data,
+-                                       size_t len,
+-                                       size_t offset)
+-{
+-  size_t remaining = len - offset;
+-
+-  if (offset == 0 && remaining > 1)
+-    {
+-      return 1;
+-    }
+-
+-  return remaining;
+-}
+-
+ static void sf32lb52_bt_rx_worker(FAR void *arg)
+ {
+   struct sf32lb52_bt_env_s *env = arg;
+@@ -517,13 +547,10 @@ static void sf32lb52_bt_rx_worker(FAR void *arg)
+ 
+           leave_critical_section(flags);
+ 
+-        #if SF32LB52_BT_TRACE
+-             syslog(LOG_INFO,
+-               "sf32lb52 bt rx drain: len=%lu local=%08lx wr=%08lx\n",
+-               (unsigned long)read_len,
+-               (unsigned long)env->rx_read_idx_mirror,
+-               (unsigned long)wr_ptr);
+-        #endif
++#if SF32LB52_BT_TRACE
++          sf32lb52_bt_log_packet("rx", env->data_buf, read_len,
++                                 env->rx_read_idx_mirror, wr_ptr);
++#endif
+ 
+           if (env->notify_host == NULL)
+             {
+@@ -888,11 +915,8 @@ int sf32lb52_host_send_packet(const uint8_t *data, uint16_t len)
+   uint32_t start_time;
+   uint32_t tick_count;
+   size_t written;
+-  size_t remaining;
+-  size_t offset;
+-  size_t chunk;
+-  size_t chunks;
+   uint32_t wr_ptr;
++  bool tx_ring_recovered;
+   int ret;
+ 
+   if (data == NULL || len == 0)
+@@ -906,70 +930,91 @@ int sf32lb52_host_send_packet(const uint8_t *data, uint16_t len)
+       return -ENODEV;
+     }
+ 
+-  offset = 0;
+-  remaining = len;
++  ret = nxmutex_lock(&g_sf32lb52_bt_tx_lock);
++  if (ret < 0)
++    {
++      return ret;
++    }
++
+   start_time = HAL_GetTick();
+   tick_count = 0;
+-  chunks = 0;
+   wr_ptr = 0;
++  tx_ring_recovered = false;
++
++  if (!sf32lb52_bt_tx_ring_valid(tx_ring))
++    {
++      syslog(LOG_WARNING,
++             "sf32lb52 bt tx ring invalid before wait: buf=%d rd=%08lx wr=%08lx\n",
++             tx_ring->buffer_size,
++             (unsigned long)tx_ring->read_idx_mirror,
++             (unsigned long)tx_ring->write_idx_mirror);
++      sf32lb52_bt_reset_tx_ring(tx_ring);
++      tx_ring_recovered = true;
++    }
+ 
+   ret = sf32lb52_bt_wait_tx_idle(tx_ring);
+   if (ret < 0)
+     {
+-      return ret;
++      goto unlock;
+     }
+ 
+-  while (remaining > 0)
++  up_invalidate_dcache((uintptr_t)SF32LB52_BT_TX_BUF_ADDR,
++                       (uintptr_t)SF32LB52_BT_TX_BUF_ADDR +
++                       sizeof(*tx_ring));
++
++  if (!sf32lb52_bt_tx_ring_valid(tx_ring))
+     {
+-      irqstate_t flags;
++      if (tx_ring_recovered)
++        {
++          syslog(LOG_ERR,
++                 "sf32lb52 bt tx ring remains invalid: buf=%d rd=%08lx wr=%08lx\n",
++                 tx_ring->buffer_size,
++                 (unsigned long)tx_ring->read_idx_mirror,
++                 (unsigned long)tx_ring->write_idx_mirror);
++          ret = -EIO;
++          goto unlock;
++        }
+ 
+-      chunk = sf32lb52_bt_tx_chunk_len(data, len, offset);
++      sf32lb52_bt_reset_tx_ring(tx_ring);
++      tx_ring_recovered = true;
++    }
+ 
+-      up_invalidate_dcache((uintptr_t)SF32LB52_BT_TX_BUF_ADDR,
+-                           (uintptr_t)SF32LB52_BT_TX_BUF_ADDR +
+-                           sizeof(*tx_ring));
++  for (;;)
++    {
++      irqstate_t flags;
+ 
+       flags = enter_critical_section();
+-      written = sf32lb52_bt_ring_write(tx_ring, data + offset, chunk);
++      written = sf32lb52_bt_ring_write(tx_ring, data, len);
+       leave_critical_section(flags);
+ 
+-      if (written == 0)
++      if (written == len)
+         {
+-          if (HAL_GetTick() != start_time)
+-            {
+-              tick_count++;
+-              start_time = HAL_GetTick();
+-            }
+-
+-          if (tick_count >= 10)
+-            {
+-              syslog(LOG_ERR,
+-                     "sf32lb52 bt tx timeout: remaining=%lu\n",
+-                     (unsigned long)remaining);
+-              return -ETIMEDOUT;
+-            }
++          break;
++        }
+ 
+-          continue;
++      if (HAL_GetTick() != start_time)
++        {
++          tick_count++;
++          start_time = HAL_GetTick();
+         }
+ 
+-      offset += written;
+-      remaining -= written;
++      if (tick_count >= 10)
++        {
++          syslog(LOG_ERR, "sf32lb52 bt tx timeout: len=%u written=%lu\n",
++                 len, (unsigned long)written);
++          ret = -ETIMEDOUT;
++          goto unlock;
++        }
+ 
+-      __DSB();
+-      wr_ptr = tx_ring->write_idx_mirror;
+       sf32lb52_bt_trigger_tx();
+-      chunks++;
++      usleep(1000);
+     }
+ 
++  __DSB();
++  wr_ptr = tx_ring->write_idx_mirror;
++  sf32lb52_bt_trigger_tx();
+ #if SF32LB52_BT_TRACE
+-  syslog(LOG_INFO,
+-         "sf32lb52 bt tx publish: total=%u chunks=%lu wr=%08lx first=%02x\n",
+-         len,
+-         (unsigned long)chunks,
+-         (unsigned long)wr_ptr,
+-         data[0]);
+-
+-  sf32lb52_bt_log_tx_state(tx_ring, "queued", wr_ptr);
++  sf32lb52_bt_log_packet("tx", data, len, tx_ring->read_idx_mirror, wr_ptr);
+ #endif
+ 
+   if (data[0] == SF32LB52_BT_H4_CMD)
+@@ -977,9 +1022,13 @@ int sf32lb52_host_send_packet(const uint8_t *data, uint16_t len)
+       ret = sf32lb52_bt_wait_tx_idle(tx_ring);
+       if (ret < 0)
+         {
+-          return ret;
++          goto unlock;
+         }
+     }
+ 
+-  return OK;
++  ret = OK;
++
++unlock:
++  nxmutex_unlock(&g_sf32lb52_bt_tx_lock);
++  return ret;
+ }
+diff --git a/chips/sf32lb52/sf32lb52_bth4.c b/chips/sf32lb52/sf32lb52_bth4.c
+index 49796cc..a8394c4 100644
+--- a/chips/sf32lb52/sf32lb52_bth4.c
++++ b/chips/sf32lb52/sf32lb52_bth4.c
+@@ -165,7 +165,6 @@ static int sf32lb52_bt_send(struct bt_driver_s *drv,
+                             void *data, size_t len);
+ static void sf32lb52_bt_close(struct bt_driver_s *drv);
+ static int sf32lb52_bt_recv_cb(uint8_t *data, uint16_t len);
+-static int sf32lb52_bt_ensure_controller_enabled(uint16_t opcode);
+ 
+ #ifdef CONFIG_BT
+ extern void z_sys_init(void);
+@@ -191,12 +190,6 @@ static uint16_t sf32lb52_bt_get_le16(const uint8_t *data)
+   return (uint16_t)data[0] | ((uint16_t)data[1] << 8);
+ }
+ 
+-static void sf32lb52_bt_put_le16(uint8_t *data, uint16_t value)
+-{
+-  data[0] = value & 0xff;
+-  data[1] = value >> 8;
+-}
+-
+ static ssize_t sf32lb52_bt_h4_packet_len(const uint8_t *data, size_t len)
+ {
+   uint16_t payload_len;
+@@ -240,34 +233,6 @@ static ssize_t sf32lb52_bt_h4_packet_len(const uint8_t *data, size_t len)
+     }
+ }
+ 
+-static void sf32lb52_bt_normalize_event(uint8_t *data, size_t len)
+-{
+-  uint16_t opcode;
+-
+-  if (len < H4_HEADER_SIZE + sizeof(struct bt_hci_evt_hdr_s) + 4 ||
+-      data[0] != H4_EVT)
+-    {
+-      return;
+-    }
+-
+-  if (data[1] == BT_HCI_EVT_CMD_COMPLETE && data[2] >= 4)
+-    {
+-      opcode = sf32lb52_bt_get_le16(&data[4]);
+-      if (opcode == BT_HCI_OP_RESET && data[6] != SF32LB52_HCI_STATUS_SUCCESS)
+-        {
+-          data[6] = SF32LB52_HCI_STATUS_SUCCESS;
+-        }
+-    }
+-  else if (data[1] == BT_HCI_EVT_CMD_STATUS && data[2] >= 4)
+-    {
+-      opcode = sf32lb52_bt_get_le16(&data[5]);
+-      if (opcode == BT_HCI_OP_RESET && data[3] != SF32LB52_HCI_STATUS_SUCCESS)
+-        {
+-          data[3] = SF32LB52_HCI_STATUS_SUCCESS;
+-        }
+-    }
+-}
+-
+ static int sf32lb52_bt_forward_packet(struct sf32lb52_bt_priv_s *priv,
+                                       uint8_t *data, size_t len)
+ {
+@@ -282,7 +247,6 @@ static int sf32lb52_bt_forward_packet(struct sf32lb52_bt_priv_s *priv,
+   switch (data[0])
+     {
+       case H4_EVT:
+-        sf32lb52_bt_normalize_event(data, len);
+         type = BT_EVT;
+         break;
+ 
+@@ -310,152 +274,6 @@ static int sf32lb52_bt_forward_packet(struct sf32lb52_bt_priv_s *priv,
+   return ret;
+ }
+ 
+-static int sf32lb52_bt_synth_cmd_complete(struct sf32lb52_bt_priv_s *priv,
+-                                          uint16_t opcode,
+-                                          const uint8_t *return_params,
+-                                          size_t return_len)
+-{
+-  uint8_t event[H4_HEADER_SIZE + sizeof(struct bt_hci_evt_hdr_s) + 3 +
+-                SF32LB52_HCI_MAX_CMD_COMPLETE_RPLEN];
+-  size_t payload_len;
+-
+-  if (return_len > SF32LB52_HCI_MAX_CMD_COMPLETE_RPLEN)
+-    {
+-      return -E2BIG;
+-    }
+-
+-  payload_len = 3 + return_len;
+-  event[0] = H4_EVT;
+-  event[1] = BT_HCI_EVT_CMD_COMPLETE;
+-  event[2] = payload_len;
+-  event[3] = 1;
+-  sf32lb52_bt_put_le16(&event[4], opcode);
+-  if (return_len > 0)
+-    {
+-      memcpy(&event[6], return_params, return_len);
+-    }
+-
+-  return sf32lb52_bt_forward_packet(priv, event,
+-                                    H4_HEADER_SIZE +
+-                                    sizeof(struct bt_hci_evt_hdr_s) +
+-                                    payload_len);
+-}
+-
+-static int sf32lb52_bt_synth_status_complete(struct sf32lb52_bt_priv_s *priv,
+-                                             uint16_t opcode)
+-{
+-  const uint8_t status = SF32LB52_HCI_STATUS_SUCCESS;
+-
+-  return sf32lb52_bt_synth_cmd_complete(priv, opcode, &status,
+-                                        sizeof(status));
+-}
+-
+-static bool sf32lb52_bt_emulate_cmd(struct sf32lb52_bt_priv_s *priv,
+-                                    uint16_t opcode, int *ret)
+-{
+-  uint8_t params[SF32LB52_HCI_MAX_CMD_COMPLETE_RPLEN];
+-
+-  switch (opcode)
+-    {
+-      case BT_HCI_OP_READ_SUPPORTED_COMMANDS:
+-        memset(params, 0, sizeof(params));
+-        params[0] = SF32LB52_HCI_STATUS_SUCCESS;
+-        params[1 + 27] = 1 << 7;
+-        *ret = sf32lb52_bt_synth_cmd_complete(priv, opcode, params,
+-                                              SF32LB52_HCI_READ_COMMANDS_RPLEN);
+-        return true;
+-
+-      case BT_HCI_OP_LE_RAND:
+-        params[0] = SF32LB52_HCI_STATUS_SUCCESS;
+-        arc4random_buf(&params[1], SF32LB52_HCI_RAND_RPLEN - 1);
+-        *ret = sf32lb52_bt_synth_cmd_complete(priv, opcode, params,
+-                                              SF32LB52_HCI_RAND_RPLEN);
+-        return true;
+-
+-      case BT_HCI_OP_READ_LOCAL_EXT_FEATURES:
+-        memset(params, 0, 11);
+-        params[0] = SF32LB52_HCI_STATUS_SUCCESS;
+-        *ret = sf32lb52_bt_synth_cmd_complete(priv, opcode, params, 11);
+-        return true;
+-
+-      case BT_HCI_OP_READ_BUFFER_SIZE:
+-        params[0] = SF32LB52_HCI_STATUS_SUCCESS;
+-        sf32lb52_bt_put_le16(&params[1], 0x00fb);
+-        params[3] = 0;
+-        sf32lb52_bt_put_le16(&params[4], 4);
+-        sf32lb52_bt_put_le16(&params[6], 0);
+-        *ret = sf32lb52_bt_synth_cmd_complete(priv, opcode, params, 8);
+-        return true;
+-
+-      case BT_HCI_OP_LE_READ_BUFFER_SIZE:
+-        params[0] = SF32LB52_HCI_STATUS_SUCCESS;
+-        sf32lb52_bt_put_le16(&params[1], 0x00fb);
+-        params[3] = 4;
+-        *ret = sf32lb52_bt_synth_cmd_complete(priv, opcode, params, 4);
+-        return true;
+-
+-      case BT_HCI_OP_LE_READ_LOCAL_FEATURES:
+-        memset(params, 0, 9);
+-        params[0] = SF32LB52_HCI_STATUS_SUCCESS;
+-        *ret = sf32lb52_bt_synth_cmd_complete(priv, opcode, params, 9);
+-        return true;
+-
+-      case BT_HCI_OP_LE_READ_MAX_DATA_LEN:
+-        params[0] = SF32LB52_HCI_STATUS_SUCCESS;
+-        sf32lb52_bt_put_le16(&params[1], 0x00fb);
+-        sf32lb52_bt_put_le16(&params[3], 0x0148);
+-        sf32lb52_bt_put_le16(&params[5], 0x00fb);
+-        sf32lb52_bt_put_le16(&params[7], 0x0148);
+-        *ret = sf32lb52_bt_synth_cmd_complete(priv, opcode, params, 9);
+-        return true;
+-
+-      case BT_HCI_OP_LE_READ_MAX_ADV_DATA_LEN:
+-        params[0] = SF32LB52_HCI_STATUS_SUCCESS;
+-        sf32lb52_bt_put_le16(&params[1], 31);
+-        *ret = sf32lb52_bt_synth_cmd_complete(priv, opcode, params, 3);
+-        return true;
+-
+-      case BT_HCI_OP_LE_READ_SUPP_STATES:
+-        memset(params, 0, 9);
+-        *ret = sf32lb52_bt_synth_cmd_complete(priv, opcode, params, 9);
+-        return true;
+-
+-      case BT_HCI_OP_LE_READ_RL_SIZE:
+-        params[0] = SF32LB52_HCI_STATUS_SUCCESS;
+-        params[1] = 0;
+-        *ret = sf32lb52_bt_synth_cmd_complete(priv, opcode, params, 2);
+-        return true;
+-
+-      case BT_HCI_OP_LE_WRITE_LE_HOST_SUPP:
+-      case BT_HCI_OP_LE_SET_HOST_FEATURE:
+-      case BT_HCI_OP_LE_SET_EVENT_MASK:
+-      case BT_HCI_OP_LE_WRITE_DEFAULT_DATA_LEN:
+-      case BT_HCI_OP_LE_SET_RPA_TIMEOUT:
+-      case BT_HCI_OP_SET_EVENT_MASK:
+-      case BT_HCI_OP_SET_EVENT_MASK_PAGE_2:
+-      case BT_HCI_OP_WRITE_LOCAL_NAME:
+-      case BT_HCI_OP_WRITE_SCAN_ENABLE:
+-      case BT_HCI_OP_WRITE_PAGE_SCAN_ACTIVITY:
+-      case BT_HCI_OP_WRITE_INQUIRY_SCAN_ACTIVITY:
+-      case BT_HCI_OP_WRITE_PAGE_TIMEOUT:
+-      case BT_HCI_OP_WRITE_CLASS_OF_DEVICE:
+-      case BT_HCI_OP_WRITE_INQUIRY_SCAN_TYPE:
+-      case BT_HCI_OP_WRITE_EXTENDED_INQUIRY_RESPONSE:
+-      case BT_HCI_OP_WRITE_INQUIRY_MODE:
+-      case BT_HCI_OP_WRITE_PAGE_SCAN_TYPE:
+-      case BT_HCI_OP_WRITE_SSP_MODE:
+-      case BT_HCI_OP_WRITE_SC_HOST_SUPP:
+-      case BT_HCI_OP_WRITE_DEFAULT_LINK_POLICY_SETTINGS:
+-      case BT_HCI_OP_HOST_BUFFER_SIZE:
+-      case BT_HCI_OP_SET_CTL_TO_HOST_FLOW:
+-        *ret = sf32lb52_bt_synth_status_complete(priv, opcode);
+-        return true;
+-
+-      default:
+-        return false;
+-    }
+-}
+-
+ static struct sf32lb52_bt_priv_s g_sf32lb52_bt_priv =
+ {
+   .drv =
+@@ -549,7 +367,6 @@ static int sf32lb52_bt_send(struct bt_driver_s *drv,
+ {
+   struct sf32lb52_bt_priv_s *priv = &g_sf32lb52_bt_priv;
+   uint8_t *hdr = (uint8_t *)data - drv->head_reserve;
+-  uint16_t opcode;
+   int ret;
+ 
+   switch (type)
+@@ -567,29 +384,6 @@ static int sf32lb52_bt_send(struct bt_driver_s *drv,
+         return -EINVAL;
+     }
+ 
+-  if (type == BT_CMD && len >= sizeof(struct bt_hci_cmd_hdr_s))
+-    {
+-      opcode = sf32lb52_bt_get_le16(data);
+-      if (sf32lb52_bt_emulate_cmd(priv, opcode, &ret))
+-        {
+-          return ret < 0 ? ret : len;
+-        }
+-
+-      ret = sf32lb52_bt_ensure_controller_enabled(opcode);
+-      if (ret < 0)
+-        {
+-          return ret;
+-        }
+-    }
+-  else
+-    {
+-      ret = sf32lb52_bt_ensure_controller_enabled(0);
+-      if (ret < 0)
+-        {
+-          return ret;
+-        }
+-    }
+-
+   priv->drop_rx_until_tx = false;
+ 
+   if (SF32LB52_BT_TRACE && type == BT_ACL_OUT)
+@@ -614,22 +408,6 @@ static int sf32lb52_bt_send(struct bt_driver_s *drv,
+   return len;
+ }
+ 
+-static int sf32lb52_bt_ensure_controller_enabled(uint16_t opcode)
+-{
+-  int ret;
+-
+-  ret = sf32lb52_bt_controller_enable();
+-  if (ret < 0)
+-    {
+-      syslog(LOG_ERR,
+-             "sf32lb52 bth4 controller enable failed before opcode=0x%04x: %d\n",
+-             opcode,
+-             ret);
+-    }
+-
+-  return ret;
+-}
+-
+ static int sf32lb52_bt_open(struct bt_driver_s *drv)
+ {
+   int ret;
+@@ -651,6 +429,12 @@ static int sf32lb52_bt_open(struct bt_driver_s *drv)
+       return ret;
+     }
+ 
++  ret = sf32lb52_bt_controller_enable();
++  if (ret < 0)
++    {
++      return ret;
++    }
++
+   return OK;
+ }
+ 
+diff --git a/chips/sf32lb52/sifli_allocateheap.c b/chips/sf32lb52/sifli_allocateheap.c
+index 62371c5..2ebb81f 100644
+--- a/chips/sf32lb52/sifli_allocateheap.c
++++ b/chips/sf32lb52/sifli_allocateheap.c
+@@ -31,6 +31,7 @@
+ #include "chip.h"
+ #include "arm_internal.h"
+ #include "bf0_hal.h"
++#include "mem_map.h"
+ 
+ extern void BSP_PIN_Init(void);
+ extern void BSP_Power_Up(bool is_deep_sleep);
+@@ -46,6 +47,11 @@ extern void BSP_Board_PreInit(void);
+ #define SRAM_SIZE   0x00080000    /* 512 KB */
+ #define SRAM_END    (SRAM_START + SRAM_SIZE)
+ 
++/* The last 1 KiB of HCPU SRAM belongs to the HCPU-to-LCPU mailbox.  It is
++ * used by Bluetooth IPC and must never be handed to the NuttX heap. */
++
++#define SRAM_HEAP_END HCPU2LCPU_MB_CH2_BUF_START_ADDR
++
+ /* PSRAM memory configuration for SF32LB52 (MPI1 SBUS) */
+ 
+ #define PSRAM_START 0x60000000
+@@ -160,10 +166,10 @@ void HAL_PreInit(void)
+ 
+ void up_allocate_heap(FAR void **heap_start, size_t *heap_size)
+ {
+-  /* The heap starts at g_idle_topstack and extends to the end of SRAM */
++  /* Leave the HCPU-to-LCPU mailbox region at the end of SRAM untouched. */
+   
+   *heap_start = (FAR void *)g_idle_topstack;
+-  *heap_size  = SRAM_END - g_idle_topstack;
++  *heap_size  = SRAM_HEAP_END - g_idle_topstack;
+ }
+ 
+ /******************************************************************************

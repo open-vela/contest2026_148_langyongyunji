@@ -210,3 +210,96 @@ index a3281b012d1..b7c216575ce 100644
  
  	/* Get maximum MTU's of other channels */
  	SYS_SLIST_FOR_EACH_CONTAINER_SAFE(&att->chans, chan, tmp, node) {
+diff --git a/subsys/bluetooth/host/conn.c b/subsys/bluetooth/host/conn.c
+index 8bcf58bbd82..98d631e9752 100644
+--- a/subsys/bluetooth/host/conn.c
++++ b/subsys/bluetooth/host/conn.c
+@@ -1788,7 +1788,11 @@ static void perform_auto_initiated_procedures(struct bt_conn *conn, void *unused
+ 		return;
+ 	}
+ 
+-	if (!atomic_test_bit(conn->flags, BT_CONN_LE_FEATURES_EXCHANGED) &&
++	/* Peripheral-initiated feature exchange is optional.  Some external H4
++	 * controllers do not implement LE Read Remote Features (0x2016), so do
++	 * not start it automatically in a peripheral-only build. */
++	if (IS_ENABLED(CONFIG_BT_CENTRAL) &&
++	    !atomic_test_bit(conn->flags, BT_CONN_LE_FEATURES_EXCHANGED) &&
+ 	    can_initiate_feature_exchange(conn)) {
+ 		err = bt_hci_le_read_remote_features(conn);
+ 		if (err) {
+@@ -4215,6 +4219,20 @@ int bt_le_set_auto_conn_mc(uint8_t dev_id, const bt_addr_le_t *addr,
+ #endif /* !defined(CONFIG_BT_FILTER_ACCEPT_LIST) */
+ #endif /* CONFIG_BT_CENTRAL */
+ 
++#if !defined(CONFIG_BT_CENTRAL)
++int bt_conn_le_create_mc(uint8_t dev_id, const bt_addr_le_t *peer,
++		 const struct bt_conn_le_create_param *create_param,
++		 const struct bt_le_conn_param *conn_param, struct bt_conn **ret_conn)
++{
++	(void)dev_id;
++	(void)peer;
++	(void)create_param;
++	(void)conn_param;
++	(void)ret_conn;
++	return -ENOTSUP;
++}
++#endif /* !CONFIG_BT_CENTRAL */
++
+ int bt_conn_le_conn_update(struct bt_conn *conn,
+ 			   const struct bt_le_conn_param *param)
+ {
+@@ -4506,7 +4524,9 @@ int bt_conn_init(struct bt_dev *hdev)
+ 
+ 	bt_att_init(hdev);
+ 
++#if defined(CONFIG_BT_ECC)
+ 	bt_ecc_init(hdev);
++#endif
+ 
+ 	err = bt_smp_init(hdev);
+ 	if (err) {
+diff --git a/subsys/bluetooth/host/hci_core.c b/subsys/bluetooth/host/hci_core.c
+index 34afd9c3b83..94046bfb21c 100644
+--- a/subsys/bluetooth/host/hci_core.c
++++ b/subsys/bluetooth/host/hci_core.c
+@@ -3487,7 +3487,11 @@ static int le_set_event_mask(struct bt_dev *hdev)
+ 		mask |= BT_EVT_MASK_LE_CONN_UPDATE_COMPLETE;
+ 		mask |= BT_EVT_MASK_LE_REMOTE_FEAT_COMPLETE;
+ 
+-		if (BT_FEAT_LE_CONN_PARAM_REQ_PROC(hdev->le.features)) {
++		/* An external controller owns the connection procedure.  The SF32
++		 * H4 controller emits this event but does not accept the required
++		 * LE Connection Parameter Request Reply command. */
++		if (IS_ENABLED(CONFIG_BT_CENTRAL) &&
++		    BT_FEAT_LE_CONN_PARAM_REQ_PROC(hdev->le.features)) {
+ 			mask |= BT_EVT_MASK_LE_CONN_PARAM_REQ;
+ 		}
+ 
+diff --git a/subsys/bluetooth/host/id.c b/subsys/bluetooth/host/id.c
+index b1cc2d303bb..a3c64406993 100644
+--- a/subsys/bluetooth/host/id.c
++++ b/subsys/bluetooth/host/id.c
+@@ -1670,12 +1670,12 @@ int bt_setup_public_id_addr(struct bt_dev *hdev)
+ 		return 0;
+ 	}
+ 
++#if defined(CONFIG_BT_PRIVACY)
+ 	if (!irk_is_empty(hdev->irk[BT_ID_DEFAULT])) {
+ 		irk = hdev->irk[BT_ID_DEFAULT];
+ 		goto out;
+ 	}
+ 
+-#if defined(CONFIG_BT_PRIVACY)
+ 	uint8_t ir_irk[16];
+ 	uint8_t ir[16] = { 0 };
+ 
+@@ -1692,7 +1692,9 @@ int bt_setup_public_id_addr(struct bt_dev *hdev)
+ 	}
+ #endif /* defined(CONFIG_BT_PRIVACY) */
+ 
++#if defined(CONFIG_BT_PRIVACY)
+ out:
++#endif
+ 	/* If true, `id_create` will randomize the IRK. */
+ 	if (!irk && IS_ENABLED(CONFIG_BT_PRIVACY)) {
+ 		/* `id_create` will not store the id when called before BT_DEV_READY.

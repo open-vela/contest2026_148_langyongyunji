@@ -1,8 +1,8 @@
 diff --git a/boards/sf32lb52/drivers/input/ft6146.c b/boards/sf32lb52/drivers/input/ft6146.c
+index 321f729..64351f1 100644
 --- a/boards/sf32lb52/drivers/input/ft6146.c
 +++ b/boards/sf32lb52/drivers/input/ft6146.c
-@@ -151,7 +151,18 @@ static void ft6146_irq_handler(void *arg)
-   struct ft6146_touch_lowerhalf_s *ft6146 =
+@@ -151,8 +151,19 @@ static void ft6146_irq_handler(void *arg)
      (struct ft6146_touch_lowerhalf_s *)arg;
    int ret;
  
@@ -21,3 +21,5 @@ diff --git a/boards/sf32lb52/drivers/input/ft6146.c b/boards/sf32lb52/drivers/in
 +      ierr("ft6146: queue touch work failed: %d\n", ret);
 +    }
  }
+ 
+ static int ft6146_hw_init(struct ft6146_touch_lowerhalf_s *ft6146)

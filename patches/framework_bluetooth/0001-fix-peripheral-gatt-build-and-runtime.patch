@@ -1,5 +1,122 @@
+diff --git a/service/profiles/gatt/gatts_service.c b/service/profiles/gatt/gatts_service.c
+index efc72436..2f52c547 100644
+--- a/service/profiles/gatt/gatts_service.c
++++ b/service/profiles/gatt/gatts_service.c
+@@ -109,6 +109,12 @@ static gatts_manager_t g_gatts_manager = {
+     .pend_ops = NULL,
+ };
+ 
++/* Service IDs are assigned in 0x100-sized groups.  Keep a direct index so
++ * incoming ATT operations do not need to walk the mutable service list. */
++static gatts_service_t* g_gatts_service_by_group[UINT8_MAX + 1];
++static gatts_service_t* g_gatts_single_service;
++static uint8_t g_gatts_service_count;
++
+ /****************************************************************************
+  * Private Functions
+  ****************************************************************************/
+@@ -147,6 +153,18 @@ static bool service_id_cmp(void* service, void* id)
+ static gatts_service_t* find_gatts_service_by_id(uint16_t srv_id)
+ {
+     srv_id = GATT_ELEMENT_GROUP_ID(srv_id);
++    gatts_service_t* service = g_gatts_service_by_group[srv_id >> 8];
++
++    if (service && service->srv_id == srv_id) {
++        return service;
++    }
++
++    /* A peripheral with one registered service receives only attributes of
++     * that service.  Avoid walking a damaged list node in this hot path. */
++    if (g_gatts_service_count == 1 && g_gatts_single_service) {
++        return g_gatts_single_service;
++    }
++
+     return bt_list_find(g_gatts_manager.services, service_id_cmp, &srv_id);
+ }
+ 
+@@ -369,6 +387,9 @@ static bt_status_t if_gatts_init(void)
+     pthread_mutexattr_t attr;
+ 
+     memset(&g_gatts_manager, 0, sizeof(g_gatts_manager));
++    memset(g_gatts_service_by_group, 0, sizeof(g_gatts_service_by_group));
++    g_gatts_single_service = NULL;
++    g_gatts_service_count = 0;
+     g_gatts_manager.started = false;
+ 
+     pthread_mutexattr_init(&attr);
+@@ -440,6 +461,9 @@ static bt_status_t if_gatts_shutdown(profile_on_shutdown_t cb)
+     manager->services = NULL;
+     bt_list_free(manager->pend_ops);
+     manager->pend_ops = NULL;
++    memset(g_gatts_service_by_group, 0, sizeof(g_gatts_service_by_group));
++    g_gatts_single_service = NULL;
++    g_gatts_service_count = 0;
+     manager->started = false;
+     pthread_mutex_unlock(&manager->device_lock);
+     bt_sal_gatt_server_disable();
+@@ -513,6 +537,9 @@ static bt_status_t if_gatts_register_service(void* remote, void** phandle, gatts
+     }
+ 
+     bt_list_add_tail(g_gatts_manager.services, service);
++    g_gatts_service_by_group[service->srv_id >> 8] = service;
++    g_gatts_service_count++;
++    g_gatts_single_service = g_gatts_service_count == 1 ? service : NULL;
+     pthread_mutex_unlock(&g_gatts_manager.device_lock);
+ 
+     pthread_mutexattr_init(&attr);
+@@ -543,6 +570,15 @@ static bt_status_t if_gatts_unregister_service(void* srv_handle)
+ 
+     void** user_phandle = service->user_phandle;
+     pthread_mutex_lock(&g_gatts_manager.device_lock);
++    if (g_gatts_service_by_group[service->srv_id >> 8] == service) {
++        g_gatts_service_by_group[service->srv_id >> 8] = NULL;
++    }
++    if (g_gatts_service_count > 0) {
++        g_gatts_service_count--;
++    }
++    if (g_gatts_single_service == service || g_gatts_service_count == 0) {
++        g_gatts_single_service = NULL;
++    }
+     bt_list_remove(g_gatts_manager.services, service);
+     pthread_mutex_unlock(&g_gatts_manager.device_lock);
+     *user_phandle = NULL;
+diff --git a/service/src/adapter_service.c b/service/src/adapter_service.c
+index c3553f9a..3984b5e9 100644
+--- a/service/src/adapter_service.c
++++ b/service/src/adapter_service.c
+@@ -60,8 +60,9 @@
+ 
+ #define CALLBACK_FOREACH(_list, _struct, _cback, ...) BT_CALLBACK_FOREACH(_list, _struct, _cback, ##__VA_ARGS__)
+ 
+-#define CHECK_ADAPTER_READY()                                     \
+-    if (g_adapter_service.adapter_state != BT_ADAPTER_STATE_ON) { \
++#define CHECK_ADAPTER_READY()                                                     \
++    if (g_adapter_service.adapter_state != BT_ADAPTER_STATE_ON &&                \
++        g_adapter_service.adapter_state != BT_ADAPTER_STATE_BLE_ON) {            \
+         status = BT_STATUS_NOT_ENABLED;                           \
+         goto error;                                               \
+     }
+@@ -2236,7 +2237,18 @@ bool adapter_is_discovering(void)
+ void adapter_get_address(bt_address_t* addr)
+ {
+     adapter_lock();
++#ifdef CONFIG_BLUETOOTH_BLE_SUPPORT
++    /* Peripheral-only builds do not enable BR/EDR, so properties.addr is
++     * intentionally empty.  The controller identity is kept in the LE
++     * adapter properties and must be returned to Framework clients. */
++    if (bt_addr_is_empty(&g_adapter_service.properties.addr) &&
++        !bt_addr_is_empty(&g_adapter_service.le_properties.addr)) {
++        memcpy(addr, &g_adapter_service.le_properties.addr, sizeof(bt_address_t));
++    } else
++#endif
++    {
+     memcpy(addr, &g_adapter_service.properties.addr, sizeof(bt_address_t));
++    }
+     adapter_unlock();
+ }
+ 
 diff --git a/service/stacks/zephyr/sal_adapter_le_interface.c b/service/stacks/zephyr/sal_adapter_le_interface.c
-index 8733e4a7..9da3487f 100644
+index 8733e4a7..7179eda8 100644
 --- a/service/stacks/zephyr/sal_adapter_le_interface.c
 +++ b/service/stacks/zephyr/sal_adapter_le_interface.c
 @@ -149,7 +149,9 @@ static struct bt_conn_cb g_conn_cbs = {
@@ -12,6 +129,21 @@ index 8733e4a7..9da3487f 100644
      .pairing_complete = zblue_on_pairing_complete,
      .pairing_failed = zblue_on_pairing_failed,
      .bond_deleted = zblue_on_bond_deleted,
+@@ -2060,13 +2062,13 @@ bt_status_t bt_sal_le_set_security_level(bt_controller_id_t id, uint8_t level)
+ #endif
+ }
+ 
+-#ifdef CONFIG_BT_SMP
+ static void zblue_convert_le_addr(bt_address_t* addr, ble_addr_type_t type, bt_addr_le_t* le_addr)
+ {
+     le_addr->type = zblue_convert_addr_type(type);
+     memcpy(le_addr->a.val, addr, sizeof(addr->addr));
+ }
+ 
++#ifdef CONFIG_BT_SMP
+ static void STACK_CALL(remove_bond)(void* args)
+ {
+     sal_adapter_req_t* req = args;
 diff --git a/service/stacks/zephyr/sal_gatt_server_interface.c b/service/stacks/zephyr/sal_gatt_server_interface.c
 index 5146fd50..82fb4a99 100644
 --- a/service/stacks/zephyr/sal_gatt_server_interface.c
@@ -256,3 +388,24 @@ index 5146fd50..82fb4a99 100644
  }
  
  bt_status_t bt_sal_gatt_server_cancel_connection(bt_controller_id_t id, bt_address_t* addr)
+diff --git a/service/stacks/zephyr/sal_le_advertise_interface.c b/service/stacks/zephyr/sal_le_advertise_interface.c
+index f1d472e3..fe6fc840 100644
+--- a/service/stacks/zephyr/sal_le_advertise_interface.c
++++ b/service/stacks/zephyr/sal_le_advertise_interface.c
+@@ -18,6 +18,7 @@
+ #include "include/sal_le_advertise_interface.h"
+ 
+ #include "advertising.h"
++#include <errno.h>
+ #include "sal_interface.h"
+ #include "service_loop.h"
+ #include "utils/log.h"
+@@ -515,7 +516,7 @@ static void STACK_CALL(stop_adv)(void* args)
+ 
+     if (!ext_supported) {
+         ret = bt_le_adv_stop();
+-        if (ret) {
++        if (ret && ret != -EALREADY) {
+             BT_LOGE("%s, legacy adv stop fail", __func__);
+             return;
+         } else {

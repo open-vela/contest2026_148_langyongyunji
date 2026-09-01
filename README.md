@@ -64,14 +64,11 @@ logs/               AI Coding 日志
   `vendor/sifli`、`frameworks` 或 NuttX 源码后交付。
 - `contest2026_148_langyongyunji/board/contest_board/configs/nsh/defconfig` 是本项目
   的配置来源。编译前执行 `scripts/apply_patches.sh`，确保 vendor/zblue patch 已应用。
-- `0007-fix-sf32lb52-h4-command-response-flow.patch` 和
-  `0008-fix-sf32lb52-h4-packet-serialization.patch` 是已验证过的 H4 修复，不能随意
-  删除或用业务代码替代。其余底层修复也必须有对应 patch 和可复现的日志证据。
-- `framework/0002-fix-gatts-single-service-lookup.patch` 避免单一 GATT Server service
-  的 ATT 读写请求回退遍历异常服务链表；它不改变 UUID、属性表或手机协议。
-- `framework/0003-fix-peripheral-only-adapter-state-and-local-address.patch` 让 Framework
-  在 BLE-only 状态下接受 adapter 请求，并把控制器 LE identity address 返回给业务层的
-  蓝牙信息页。
+- `vendor_sifli/0007-fix-sf32lb52-h4-mailbox-stability.patch` 汇总已验证的 H4 命令、
+  ACL 串行化、HCPU mailbox 保留、TX ring 恢复和日志控制修复，不能用业务代码替代。
+- `zblue/0001-fix-peripheral-only-ble-build-and-runtime.patch` 与
+  `framework_bluetooth/0001-fix-peripheral-gatt-build-and-runtime.patch` 汇总 BLE-only
+  的运行时、GATT 服务和条件编译修复；它们不改变 UUID、属性表或手机协议。
 - BLE 只启用 Peripheral/GATT Server 所需能力；BR/EDR、GATT Client、扫描和测试命令
   不应为了“保险”全部打开。配置变更必须记录在本目录并从队伍目录重新构建。
 - BLE 只允许一次 Framework instance、一次 adapter callback、一次 Service 注册和一次
@@ -81,12 +78,10 @@ logs/               AI Coding 日志
 
 当前实测链路已恢复：设备可以广播，App 可以连接并完成 GATT 服务发现，订阅后的状态心跳
 持续发送。H4 TX ring 曾出现元数据异常并在 `memcpy` 处触发 HardFault；当前
-`0010-fix-sf32lb52-reserve-hcpu-mailbox-from-heap.patch` 将 HCPU 尾部 1 KiB mailbox
-从 NuttX 堆中排除，避免 BLE IPC 覆盖堆元数据。紧随其后的
-`0011-fix-sf32lb52-h4-tx-ring-recovery.patch` 对 ring 边界、D-cache 和一次性恢复做了
-保护，异常仍会保留 warning/error 日志。`0012-chore-sf32lb52-h4-disable-packet-trace.patch`
-关闭逐包 H4 RX/TX 输出；若服务发现再次异常，应基于当前 vendor 源码临时增加日志，并按
-H4 RX -> Framework/ATT -> H4 TX -> App 回调的顺序定位，不先修改 UUID、MTU 或 App 协议。
+`0007-fix-sf32lb52-h4-mailbox-stability.patch` 将 HCPU 尾部 1 KiB mailbox 从 NuttX 堆中
+排除，并对 TX ring 边界、D-cache 和一次性恢复做保护；逐包 H4 RX/TX 输出默认关闭。若
+服务发现再次异常，应基于当前 vendor 源码临时增加日志，并按 H4 RX -> Framework/ATT ->
+H4 TX -> App 回调的顺序定位，不先修改 UUID、MTU 或 App 协议。
 
 详细 BLE 协议见 [app/hello_app/comm/README.md](app/hello_app/comm/README.md)。
 
