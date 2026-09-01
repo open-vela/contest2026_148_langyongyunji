@@ -1,0 +1,212 @@
+diff --git a/subsys/bluetooth/host/att.c b/subsys/bluetooth/host/att.c
+index a3281b012d1..b7c216575ce 100644
+--- a/subsys/bluetooth/host/att.c
++++ b/subsys/bluetooth/host/att.c
+@@ -148,9 +148,11 @@ static uint16_t bt_att_mtu(struct bt_att_chan *chan)
+ 	 *         The server and client shall set ATT_MTU to the minimum of the
+ 	 *         Client Rx MTU and the Server Rx MTU.
+ 	 */
+-	if (IS_ENABLED(CONFIG_BT_ATT_OVER_BR) && bt_att_is_over_br(chan)) {
++#if defined(CONFIG_BT_ATT_OVER_BR)
++	if (bt_att_is_over_br(chan)) {
+ 		return MIN(chan->br_chan.rx.mtu, chan->br_chan.tx.mtu);
+ 	}
++#endif
+ 
+ 	return MIN(chan->chan.rx.mtu, chan->chan.tx.mtu);
+ }
+@@ -325,15 +327,16 @@ static void att_sent(void *user_data)
+ 	struct bt_att_tx_meta_data *data = user_data;
+ 	struct bt_att_chan *att_chan = data->att_chan;
+ 	struct bt_conn *conn = att_chan->att->conn;
+-	struct bt_l2cap_chan *chan;
++	struct bt_l2cap_chan *chan = &att_chan->chan.chan;
+ 
+ 	__ASSERT_NO_MSG(!bt_att_is_enhanced(att_chan));
+ 
+-	if (IS_ENABLED(CONFIG_BT_ATT_OVER_BR) && bt_att_is_over_br(att_chan)) {
++
++#if defined(CONFIG_BT_ATT_OVER_BR)
++	if (bt_att_is_over_br(att_chan)) {
+ 		chan = &att_chan->br_chan.chan;
+-	} else {
+-		chan = &att_chan->chan.chan;
+ 	}
++#endif
+ 
+ 	LOG_DBG("conn %p chan %p", conn, chan);
+ 
+@@ -439,10 +442,13 @@ static int chan_send(struct bt_att_chan *chan, struct net_buf *buf)
+ 	net_buf_simple_save(&buf->b, &state);
+ 
+ 	data->att_chan = chan;
+-	if (IS_ENABLED(CONFIG_BT_ATT_OVER_BR) && bt_att_is_over_br(chan)) {
++#if defined(CONFIG_BT_ATT_OVER_BR)
++	if (bt_att_is_over_br(chan)) {
+ 		l2cap_chan = &chan->br_chan.chan;
+ 		err = bt_l2cap_chan_send(l2cap_chan, buf);
+-	} else {
++	} else
++#endif
++	{
+ 		l2cap_chan = &chan->chan.chan;
+ 		err = bt_l2cap_send_pdu(&chan->chan, buf, NULL, NULL);
+ 	}
+@@ -666,13 +672,14 @@ static void chan_req_notif_sent(struct bt_att_tx_meta_data *user_data)
+ 	bt_gatt_complete_func_t func = data->func;
+ 	uint16_t attr_count = data->attr_count;
+ 	void *ud = data->user_data;
+-	uint16_t cid;
++	uint16_t cid = chan->chan.tx.cid;
++
+ 
+-	if (IS_ENABLED(CONFIG_BT_ATT_OVER_BR) && bt_att_is_over_br(chan)) {
++#if defined(CONFIG_BT_ATT_OVER_BR)
++	if (bt_att_is_over_br(chan)) {
+ 		cid = chan->br_chan.tx.cid;
+-	} else {
+-		cid = chan->chan.tx.cid;
+ 	}
++#endif
+ 
+ 	LOG_DBG("chan %p CID 0x%04X", chan, cid);
+ 
+@@ -1032,10 +1039,13 @@ static uint8_t att_mtu_rsp(struct bt_att_chan *chan, struct net_buf *buf)
+ 		return att_handle_rsp(chan, NULL, 0, BT_ATT_ERR_INVALID_PDU);
+ 	}
+ 
+-	if (IS_ENABLED(CONFIG_BT_ATT_OVER_BR) && bt_att_is_over_br(chan)) {
++#if defined(CONFIG_BT_ATT_OVER_BR)
++	if (bt_att_is_over_br(chan)) {
+ 			chan->br_chan.rx.mtu = L2CAP_BR_DEFAULT_MTU;
+ 			chan->br_chan.tx.mtu = mtu;
+-	} else {
++	} else
++#endif
++	{
+ 		/* The following must equal the value we sent in the req. We assume this
+ 		* is a rsp to `gatt_exchange_mtu_encode`.
+ 		*/
+@@ -1199,13 +1209,14 @@ struct find_type_data {
+ 
+ static struct bt_conn *get_conn(struct bt_att_chan *att_chan)
+ {
+-	struct bt_conn *conn;
++	struct bt_conn *conn = att_chan->chan.chan.conn;
++
+ 
+-	if (IS_ENABLED(CONFIG_BT_ATT_OVER_BR) && bt_att_is_over_br(att_chan)) {
++#if defined(CONFIG_BT_ATT_OVER_BR)
++	if (bt_att_is_over_br(att_chan)) {
+ 		conn = att_chan->br_chan.chan.conn;
+-	} else {
+-		conn = att_chan->chan.chan.conn;
+ 	}
++#endif
+ 
+ 	return conn;
+ }
+@@ -3110,8 +3121,8 @@ static struct bt_att *att_get(struct bt_conn *conn)
+ 		return NULL;
+ 	}
+ 
+-	if (IS_ENABLED(CONFIG_BT_CLASSIC) &&
+-	    conn->type == BT_CONN_TYPE_BR) {
++#if defined(CONFIG_BT_ATT_OVER_BR)
++	if (conn->type == BT_CONN_TYPE_BR) {
+ 		chan = bt_l2cap_br_lookup_psm(conn, BT_L2CAP_PSM_ATT);
+ 		if (!chan) {
+ 			LOG_ERR("Unable to find ATT channel");
+@@ -3126,6 +3137,7 @@ static struct bt_att *att_get(struct bt_conn *conn)
+ 
+ 		return att_chan->att;
+ 	}
++#endif
+ 
+ 	chan = bt_l2cap_le_lookup_rx_cid(conn, BT_L2CAP_CID_ATT);
+ 	if (!chan) {
+@@ -3277,13 +3289,17 @@ static void att_timeout(struct k_work *work)
+ 
+ 	if (conn->type == BT_CONN_TYPE_LE) {
+ 		bt_addr_le_to_str(bt_conn_get_dst(conn), addr, sizeof(addr));
+-	} else if (conn->type == BT_CONN_TYPE_BR) {
++	}
++#if defined(CONFIG_BT_ATT_OVER_BR)
++	else if (conn->type == BT_CONN_TYPE_BR) {
+ 		bt_addr_to_str(bt_conn_get_dst_br(conn), addr, sizeof(addr));
+ 	}
++#endif
+ 
+ 	LOG_ERR("ATT Timeout for device %s. Disconnecting...", addr);
+ 
+-	if (IS_ENABLED(CONFIG_BT_ATT_OVER_BR) && bt_att_is_over_br(chan)) {
++#if defined(CONFIG_BT_ATT_OVER_BR)
++	if (bt_att_is_over_br(chan)) {
+ 		/* timeout execute att_br disconnect
+ 		 *
+ 		 * bt_att_disconnected will be called after L2CAP disconnected, so
+@@ -3295,6 +3311,7 @@ static void att_timeout(struct k_work *work)
+ 		}
+ 		return;
+ 	}
++#endif
+ 
+ 	/* BLUETOOTH SPECIFICATION Version 4.2 [Vol 3, Part F] page 480:
+ 	 *
+@@ -3354,7 +3371,8 @@ static void bt_att_connected(struct bt_l2cap_chan *chan)
+ 
+ 	k_work_init_delayable(&att_chan->timeout_work, att_timeout);
+ 
+-	if (IS_ENABLED(CONFIG_BT_ATT_OVER_BR) && bt_att_is_over_br(att_chan)) {
++#if defined(CONFIG_BT_ATT_OVER_BR)
++	if (bt_att_is_over_br(att_chan)) {
+ 		struct bt_l2cap_br_chan *br_chan = BT_L2CAP_BR_CHAN(chan);
+ 		struct bt_att_conn_cb *callback;
+ 
+@@ -3369,7 +3387,9 @@ static void bt_att_connected(struct bt_l2cap_chan *chan)
+ 				callback->connected(chan->conn);
+ 			}
+ 		}
+-	} else {
++	} else
++#endif
++	{
+ 		le_chan = BT_L2CAP_LE_CHAN(chan);
+ 		conn = le_chan->chan.conn;
+ 		LOG_DBG("chan %p cid 0x%04x", le_chan, le_chan->tx.cid);
+@@ -3399,7 +3419,8 @@ static void bt_att_disconnected(struct bt_l2cap_chan *chan)
+ 
+ 	att_reset(att);
+ 
+-	if (IS_ENABLED(CONFIG_BT_ATT_OVER_BR) && bt_att_is_over_br(att_chan)) {
++#if defined(CONFIG_BT_ATT_OVER_BR)
++	if (bt_att_is_over_br(att_chan)) {
+ 		struct bt_l2cap_br_chan *br_chan = BT_L2CAP_BR_CHAN(chan);
+ 		struct bt_att_conn_cb *callback;
+ 
+@@ -3412,6 +3433,7 @@ static void bt_att_disconnected(struct bt_l2cap_chan *chan)
+ 		}
+ 		return;
+ 	}
++#endif
+ 
+ 	le_chan = BT_L2CAP_LE_CHAN(chan);
+ 
+@@ -4278,7 +4300,8 @@ static void att_chan_mtu_updated(struct bt_att_chan *updated_chan)
+ 	struct bt_att_chan *chan, *tmp;
+ 	uint16_t max_tx = 0, max_rx = 0;
+ 
+-	if (IS_ENABLED(CONFIG_BT_ATT_OVER_BR) && bt_att_is_over_br(updated_chan)) {
++#if defined(CONFIG_BT_ATT_OVER_BR)
++	if (bt_att_is_over_br(updated_chan)) {
+ 		SYS_SLIST_FOR_EACH_CONTAINER_SAFE(&att->chans, chan, tmp, node) {
+ 			if (chan == updated_chan) {
+ 				continue;
+@@ -4296,6 +4319,7 @@ static void att_chan_mtu_updated(struct bt_att_chan *updated_chan)
+ 
+ 		return;
+ 	}
++#endif
+ 
+ 	/* Get maximum MTU's of other channels */
+ 	SYS_SLIST_FOR_EACH_CONTAINER_SAFE(&att->chans, chan, tmp, node) {
