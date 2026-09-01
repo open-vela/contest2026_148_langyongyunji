@@ -6,6 +6,14 @@
  ****************************************************************************/
 
 /****************************************************************************
+ * Pre-processor Definitions
+ ****************************************************************************/
+
+/* Battery percentage overlay on the watchface battery icon.  Reads VBAT
+ * through /dev/adc0 (ADC_CHAN_VBAT) inside the charge poll timer. */
+#define VG_BATTERY_PCT_ENABLED 1
+
+/****************************************************************************
  * Included Files
  ****************************************************************************/
 
@@ -27,6 +35,12 @@
 #include <time.h>
 
 #include <unistd.h>
+
+#if VG_BATTERY_PCT_ENABLED
+#  include <sys/ioctl.h>
+#  include <nuttx/analog/adc.h>
+#  include <nuttx/analog/ioctl.h>
+#endif
 
 #ifdef CONFIG_INPUT_BUTTONS
 #  include <nuttx/input/buttons.h>
@@ -178,7 +192,18 @@ LV_FONT_DECLARE(velaguard_font_30);
  * Reversal of the polarity, if any, only requires swapping these defines. */
 #define VG_VBUS_DET_PIN      GET_PIN_2(hwp_gpio1, 44)
 #define VG_CHARGE_POLL_MS    2000
-#define VG_CHARGE_BLINK_MS   1000
+#define VG_CHARGE_BLINK_MS   500
+
+/* Battery voltage -> percentage: full at >= 4200 mV, empty at <= 3400 mV,
+ * linear in between, displayed in 20 % steps.  Below
+ * VG_BATTERY_ABSENT_MV no battery is considered present and the
+ * percentage is not shown. */
+#if VG_BATTERY_PCT_ENABLED
+#  define VG_BATTERY_FULL_MV    4200
+#  define VG_BATTERY_EMPTY_MV   3400
+#  define VG_BATTERY_ABSENT_MV  1000
+#  define VG_BATTERY_PCT_STEP   20
+#endif
 #define VG_SOS_BUTTON_BIT    ((btn_buttonset_t)1 << 0) /* PA43 / KEY2 */
 #define VG_DEVICE_WAIT_STEP_MS 100
 #define VG_DEVICE_WAIT_MS      5000
@@ -367,6 +392,11 @@ struct vg_app_s
   lv_timer_t *charge_timer;
   uint8_t charge_poll_cnt;
   bool charging;
+#if VG_BATTERY_PCT_ENABLED
+  lv_obj_t *home_battery_pct_label;
+  int adc_fd;
+  int battery_pct;
+#endif
 #ifdef CONFIG_INPUT_BUTTONS
   int button_fd;
   btn_buttonset_t last_buttons;
@@ -394,6 +424,11 @@ static void vg_schedule_render(enum vg_render_e render);
 static void vg_process_pending_render(void);
 static void vg_render_timer_cb(lv_timer_t *timer);
 static uint64_t vg_uptime_ms(void);
+#if VG_BATTERY_PCT_ENABLED
+static lv_obj_t *vg_battery_pct_label_create(lv_obj_t *battery_img);
+static int vg_read_battery_mv(void);
+static void vg_update_battery_pct(void);
+#endif
 static void vg_charge_timer_cb(lv_timer_t *timer);
 static void vg_set_font(lv_obj_t *obj);
 static void vg_trigger_fall_result(const struct vg_fall_result_s *result);
@@ -980,6 +1015,9 @@ static lv_obj_t *vg_screen_reset(void)
   g_vg.home_week_img = NULL;
   g_vg.home_week_digit = -1;
   g_vg.home_battery_img = NULL;
+#if VG_BATTERY_PCT_ENABLED
+  g_vg.home_battery_pct_label = NULL;
+#endif
   g_vg.home_date_label = NULL;
   g_vg.home_week_label = NULL;
   g_vg.home_root = NULL;
@@ -1121,6 +1159,40 @@ static lv_obj_t *vg_image_at(lv_obj_t *parent,
 
   return img;
 }
+
+/****************************************************************************
+ * Name: vg_battery_pct_label_create
+ *
+ * Description:
+ *   Create the battery percentage label as a child of the battery icon so
+ *   it follows the icon (including being hidden together with it).
+ ****************************************************************************/
+
+#if VG_BATTERY_PCT_ENABLED
+static lv_obj_t *vg_battery_pct_label_create(lv_obj_t *battery_img)
+{
+  lv_obj_t *label = lv_label_create(battery_img);
+  char buf[8];
+
+  lv_obj_set_style_text_font(label, LV_FONT_DEFAULT, LV_PART_MAIN);
+  lv_obj_set_style_text_color(label, lv_color_hex(0x000000),
+                              LV_PART_MAIN);
+  lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
+
+  /* Restore the last measured value; "0%" until the first poll. */
+  if (g_vg.battery_pct >= 0)
+    {
+      snprintf(buf, sizeof(buf), "%d%%", g_vg.battery_pct);
+      lv_label_set_text(label, buf);
+    }
+  else
+    {
+      lv_label_set_text(label, "0%");
+    }
+
+  return label;
+}
+#endif /* VG_BATTERY_PCT_ENABLED */
 
 static void vg_image_set_src_if_needed(lv_obj_t *img, int *current,
                                        int value,
@@ -2054,6 +2126,10 @@ static void vg_render_home(void)
       g_vg.home_battery_img = vg_image_at(root,
                   &velaguard_img_icon_rainbow_rain_battery_5,
                   VG_X(163), VG_Y(247));
+#if VG_BATTERY_PCT_ENABLED
+      g_vg.home_battery_pct_label =
+                  vg_battery_pct_label_create(g_vg.home_battery_img);
+#endif
     }
   else
     {
@@ -2084,6 +2160,10 @@ static void vg_render_home(void)
       g_vg.home_battery_img = vg_image_at(root,
                   &velaguard_img_icon_touch_future_battery_5,
                   VG_X(184), VG_Y(248));
+#if VG_BATTERY_PCT_ENABLED
+      g_vg.home_battery_pct_label =
+                  vg_battery_pct_label_create(g_vg.home_battery_img);
+#endif
     }
 #endif
 
@@ -2708,13 +2788,123 @@ static void vg_buttons_poll(void)
 }
 #endif
 
+#if VG_BATTERY_PCT_ENABLED
+/****************************************************************************
+ * Name: vg_read_battery_mv
+ *
+ * Description:
+ *   Trigger one /dev/adc0 conversion and return the VBAT voltage in mV.
+ *   Returns -1 on any failure.  The sample is the 12-bit result of the
+ *   on-chip VBAT monitor channel (ADC_CHAN_VBAT) converted by the lower
+ *   driver using its factory-default calibration.
+ ****************************************************************************/
+
+static int vg_read_battery_mv(void)
+{
+  struct adc_msg_s msg;
+  ssize_t nread;
+
+  if (g_vg.adc_fd < 0)
+    {
+      return -1;
+    }
+
+  if (ioctl(g_vg.adc_fd, ANIOC_TRIGGER, 0) < 0)
+    {
+      return -1;
+    }
+
+  nread = read(g_vg.adc_fd, &msg, sizeof(msg));
+  if (nread != (ssize_t)sizeof(msg))
+    {
+      return -1;
+    }
+
+  return (int)msg.am_data;
+}
+
+/****************************************************************************
+ * Name: vg_update_battery_pct
+ *
+ * Description:
+ *   Read VBAT, map 3400..4200 mV linearly onto 0..100 % and snap the
+ *   result to the nearest 20 % step.  Updates the percentage label.
+ ****************************************************************************/
+
+static void vg_update_battery_pct(void)
+{
+  int mv;
+  int pct;
+  char buf[8];
+
+  mv = vg_read_battery_mv();
+  if (mv < 0)
+    {
+      return;
+    }
+
+  /* No battery present (VBAT near ground): keep the percentage hidden. */
+  if (mv < VG_BATTERY_ABSENT_MV)
+    {
+      printf("VelaGuard: battery absent, VBAT=%d mV\n", mv);
+
+      if (g_vg.home_battery_pct_label != NULL)
+        {
+          lv_obj_add_flag(g_vg.home_battery_pct_label,
+                          LV_OBJ_FLAG_HIDDEN);
+        }
+
+      return;
+    }
+
+  if (g_vg.home_battery_pct_label != NULL)
+    {
+      lv_obj_clear_flag(g_vg.home_battery_pct_label,
+                        LV_OBJ_FLAG_HIDDEN);
+    }
+
+  if (mv >= VG_BATTERY_FULL_MV)
+    {
+      pct = 100;
+    }
+  else if (mv <= VG_BATTERY_EMPTY_MV)
+    {
+      pct = 0;
+    }
+  else
+    {
+      pct = (mv - VG_BATTERY_EMPTY_MV) * 100
+            / (VG_BATTERY_FULL_MV - VG_BATTERY_EMPTY_MV);
+    }
+
+  /* Snap to the nearest 20 % step: 0/20/40/60/80/100. */
+  pct = ((pct + VG_BATTERY_PCT_STEP / 2) / VG_BATTERY_PCT_STEP)
+        * VG_BATTERY_PCT_STEP;
+
+  printf("VelaGuard: battery VBAT=%d mV -> %d%%\n", mv, pct);
+
+  if (pct == g_vg.battery_pct)
+    {
+      return;
+    }
+
+  g_vg.battery_pct = pct;
+  if (g_vg.home_battery_pct_label != NULL)
+    {
+      snprintf(buf, sizeof(buf), "%d%%", pct);
+      lv_label_set_text(g_vg.home_battery_pct_label, buf);
+    }
+}
+#endif /* VG_BATTERY_PCT_ENABLED */
+
 /****************************************************************************
  * Name: vg_charge_timer_cb
  *
  * Description:
  *   Single 500 ms timer: every 4th tick (2000 ms) polls the USB charger
- *   insertion pin (PA44 / VBUS_DET); while charging, each tick toggles
- *   the watchface battery icon (0.5 s visible / 0.5 s hidden).
+ *   insertion pin (PA44 / VBUS_DET) and the battery voltage; while
+ *   charging, each tick toggles the watchface battery icon (0.5 s visible
+ *   / 0.5 s hidden).
  ****************************************************************************/
 
 static void vg_charge_timer_cb(lv_timer_t *timer)
@@ -2739,6 +2929,10 @@ static void vg_charge_timer_cb(lv_timer_t *timer)
                                 LV_OBJ_FLAG_HIDDEN);
             }
         }
+
+#if VG_BATTERY_PCT_ENABLED
+      vg_update_battery_pct();
+#endif
     }
 
   /* While charging, blink 0.5 s on / 0.5 s off. */
@@ -3142,6 +3336,19 @@ int main(int argc, FAR char *argv[])
   g_vg.charge_poll_cnt = 0;
   g_vg.charge_timer = lv_timer_create(vg_charge_timer_cb,
                                       VG_CHARGE_BLINK_MS, NULL);
+
+#if VG_BATTERY_PCT_ENABLED
+  /* The same 2 s poll reads the battery voltage from /dev/adc0 (VBAT
+   * channel) and shows the percentage over the battery icon. */
+  g_vg.adc_fd = open("/dev/adc0", O_RDONLY);
+  if (g_vg.adc_fd < 0)
+    {
+      printf("VelaGuard: open /dev/adc0 failed, battery %% disabled\n");
+    }
+
+  g_vg.battery_pct = -1;
+  vg_update_battery_pct();
+#endif
 
   for (warmup = 0; warmup < 3; warmup++)
     {
