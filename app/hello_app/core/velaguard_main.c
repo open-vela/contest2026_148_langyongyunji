@@ -37,6 +37,8 @@
 
 #include <lvgl/lvgl.h>
 
+#include "sifli_gpio.h"
+
 extern const lv_image_dsc_t velaguard_img_bg_alarm;
 extern const lv_image_dsc_t velaguard_img_ble_icon;
 extern const lv_image_dsc_t velaguard_img_fall_icon;
@@ -170,6 +172,13 @@ LV_FONT_DECLARE(velaguard_font_30);
 #define VG_COLOR_INFO        0x3d8bfd
 #define VG_TICK_PERIOD_MS    10
 #define VG_IMU_UI_PERIOD_MS  100
+
+/* USB charger insertion detection (Huangshan Pi): PA44 = VBUS_DET, see
+ * LCKFB signal table.  High level means a charger / USB VBUS is present.
+ * Reversal of the polarity, if any, only requires swapping these defines. */
+#define VG_VBUS_DET_PIN      GET_PIN_2(hwp_gpio1, 44)
+#define VG_CHARGE_POLL_MS    2000
+#define VG_CHARGE_BLINK_MS   1000
 #define VG_SOS_BUTTON_BIT    ((btn_buttonset_t)1 << 0) /* PA43 / KEY2 */
 #define VG_DEVICE_WAIT_STEP_MS 100
 #define VG_DEVICE_WAIT_MS      5000
@@ -354,6 +363,10 @@ struct vg_app_s
   lv_timer_t *tick_timer;
   lv_timer_t *imu_timer;
   lv_timer_t *render_timer;
+  lv_obj_t *home_battery_img;
+  lv_timer_t *charge_timer;
+  uint8_t charge_poll_cnt;
+  bool charging;
 #ifdef CONFIG_INPUT_BUTTONS
   int button_fd;
   btn_buttonset_t last_buttons;
@@ -381,6 +394,7 @@ static void vg_schedule_render(enum vg_render_e render);
 static void vg_process_pending_render(void);
 static void vg_render_timer_cb(lv_timer_t *timer);
 static uint64_t vg_uptime_ms(void);
+static void vg_charge_timer_cb(lv_timer_t *timer);
 static void vg_set_font(lv_obj_t *obj);
 static void vg_trigger_fall_result(const struct vg_fall_result_s *result);
 static void vg_start_prealert(enum vg_event_type_e type, int countdown,
@@ -965,6 +979,7 @@ static lv_obj_t *vg_screen_reset(void)
 
   g_vg.home_week_img = NULL;
   g_vg.home_week_digit = -1;
+  g_vg.home_battery_img = NULL;
   g_vg.home_date_label = NULL;
   g_vg.home_week_label = NULL;
   g_vg.home_root = NULL;
@@ -2036,7 +2051,8 @@ static void vg_render_home(void)
                                       LV_TEXT_ALIGN_LEFT, VG_COLOR_TEXT);
       lv_obj_align(g_vg.home_week_label, LV_ALIGN_TOP_LEFT,
                    VG_X(112), VG_Y(241));
-      vg_image_at(root, &velaguard_img_icon_rainbow_rain_battery_5,
+      g_vg.home_battery_img = vg_image_at(root,
+                  &velaguard_img_icon_rainbow_rain_battery_5,
                   VG_X(163), VG_Y(247));
     }
   else
@@ -2065,7 +2081,8 @@ static void vg_render_home(void)
         &velaguard_img_icon_touch_future_date_0, VG_X(91), VG_Y(249));
       g_vg.home_week_img = vg_image_at(root,
         &velaguard_img_icon_touch_future_week_0, VG_X(110), VG_Y(250));
-      vg_image_at(root, &velaguard_img_icon_touch_future_battery_5,
+      g_vg.home_battery_img = vg_image_at(root,
+                  &velaguard_img_icon_touch_future_battery_5,
                   VG_X(184), VG_Y(248));
     }
 #endif
@@ -2691,6 +2708,53 @@ static void vg_buttons_poll(void)
 }
 #endif
 
+/****************************************************************************
+ * Name: vg_charge_timer_cb
+ *
+ * Description:
+ *   Single 500 ms timer: every 4th tick (2000 ms) polls the USB charger
+ *   insertion pin (PA44 / VBUS_DET); while charging, each tick toggles
+ *   the watchface battery icon (0.5 s visible / 0.5 s hidden).
+ ****************************************************************************/
+
+static void vg_charge_timer_cb(lv_timer_t *timer)
+{
+  UNUSED(timer);
+
+  /* Poll charging state every 2000 ms = 4 * 500 ms. */
+  if (++g_vg.charge_poll_cnt >= (VG_CHARGE_POLL_MS / VG_CHARGE_BLINK_MS))
+    {
+      bool charging;
+
+      g_vg.charge_poll_cnt = 0;
+      charging = sifli_gpio_read(VG_VBUS_DET_PIN);
+      if (charging != g_vg.charging)
+        {
+          g_vg.charging = charging;
+
+          /* Keep the icon visible whenever not blinking. */
+          if (g_vg.home_battery_img != NULL)
+            {
+              lv_obj_clear_flag(g_vg.home_battery_img,
+                                LV_OBJ_FLAG_HIDDEN);
+            }
+        }
+    }
+
+  /* While charging, blink 0.5 s on / 0.5 s off. */
+  if (g_vg.charging && g_vg.home_battery_img != NULL)
+    {
+      if (lv_obj_has_flag(g_vg.home_battery_img, LV_OBJ_FLAG_HIDDEN))
+        {
+          lv_obj_clear_flag(g_vg.home_battery_img, LV_OBJ_FLAG_HIDDEN);
+        }
+      else
+        {
+          lv_obj_add_flag(g_vg.home_battery_img, LV_OBJ_FLAG_HIDDEN);
+        }
+    }
+}
+
 static void vg_tick_cb(lv_timer_t *timer)
 {
   uint64_t now;
@@ -3071,6 +3135,13 @@ int main(int argc, FAR char *argv[])
                                    NULL);
   g_vg.render_timer = lv_timer_create(vg_render_timer_cb, 1, NULL);
   lv_timer_pause(g_vg.render_timer);
+
+  /* USB charging detection: one 500 ms timer polls VBUS_DET every 2 s and
+   * blinks the battery icon (0.5 s on / 0.5 s off) while charging. */
+  g_vg.charging = sifli_gpio_read(VG_VBUS_DET_PIN);
+  g_vg.charge_poll_cnt = 0;
+  g_vg.charge_timer = lv_timer_create(vg_charge_timer_cb,
+                                      VG_CHARGE_BLINK_MS, NULL);
 
   for (warmup = 0; warmup < 3; warmup++)
     {
