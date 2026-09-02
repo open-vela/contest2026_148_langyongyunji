@@ -9,8 +9,8 @@
  * Pre-processor Definitions
  ****************************************************************************/
 
-/* Battery percentage overlay on the watchface battery icon.  Reads VBAT
- * through /dev/adc0 (ADC_CHAN_VBAT) inside the charge poll timer. */
+/* Battery percentage overlay on the watchface battery icon.  VBAT is sampled
+ * by the dedicated battery task and shown here from its cached snapshot. */
 #define VG_BATTERY_PCT_ENABLED 1
 
 /* Timeout for waiting until the audio task reports MIC capture ready. */
@@ -39,12 +39,6 @@
 
 #include <unistd.h>
 
-#if VG_BATTERY_PCT_ENABLED
-#  include <sys/ioctl.h>
-#  include <nuttx/analog/adc.h>
-#  include <nuttx/analog/ioctl.h>
-#endif
-
 #ifdef CONFIG_INPUT_BUTTONS
 #  include <nuttx/input/buttons.h>
 #endif
@@ -53,8 +47,6 @@
 #endif
 
 #include <lvgl/lvgl.h>
-
-#include "sifli_gpio.h"
 
 extern const lv_image_dsc_t velaguard_img_bg_alarm;
 extern const lv_image_dsc_t velaguard_img_ble_icon;
@@ -128,10 +120,12 @@ extern const lv_image_dsc_t velaguard_img_thumb_touch_future;
 
 #include "velaguard_fall.h"
 #include "velaguard_imu.h"
+#include "velaguard_battery.h"
 #include "velaguard_ble.h"
 #include "velaguard_audio.h"
 #include "velaguard_audio_feedback.h"
 #include "velaguard_audio_task.h"
+#include "velaguard_ui.h"
 
 LV_FONT_DECLARE(velaguard_font_30);
 
@@ -190,24 +184,15 @@ LV_FONT_DECLARE(velaguard_font_30);
 #define VG_COLOR_INFO        0x3d8bfd
 #define VG_TICK_PERIOD_MS    10
 #define VG_IMU_UI_PERIOD_MS  100
+#define VG_IMU_TASK_PRIORITY 102
+#define VG_IMU_TASK_STACKSIZE 16384
+/* Battery sampling is best-effort work.  Keep it below the UI task so a
+ * slow ADC conversion cannot preempt touch handling or display refresh. */
+#define VG_BATTERY_TASK_PRIORITY 99
+#define VG_BATTERY_TASK_STACKSIZE 4096
 
-/* USB charger insertion detection (Huangshan Pi): PA44 = VBUS_DET, see
- * LCKFB signal table.  High level means a charger / USB VBUS is present.
- * Reversal of the polarity, if any, only requires swapping these defines. */
-#define VG_VBUS_DET_PIN      GET_PIN_2(hwp_gpio1, 44)
-#define VG_CHARGE_POLL_MS    2000
 #define VG_CHARGE_BLINK_MS   500
 
-/* Battery voltage -> percentage: full at >= 4200 mV, empty at <= 3400 mV,
- * linear in between, displayed in 20 % steps.  Below
- * VG_BATTERY_ABSENT_MV no battery is considered present and the
- * percentage is not shown. */
-#if VG_BATTERY_PCT_ENABLED
-#  define VG_BATTERY_FULL_MV    4200
-#  define VG_BATTERY_EMPTY_MV   3400
-#  define VG_BATTERY_ABSENT_MV  1000
-#  define VG_BATTERY_PCT_STEP   20
-#endif
 #define VG_SOS_BUTTON_BIT    ((btn_buttonset_t)1 << 0) /* PA43 / KEY2 */
 #define VG_DEVICE_WAIT_STEP_MS 100
 #define VG_DEVICE_WAIT_MS      5000
@@ -224,6 +209,7 @@ LV_FONT_DECLARE(velaguard_font_30);
 #define VG_BUTTON_RELEASE_DEBOUNCE_MS 100
 #define VG_HOME_EDIT_LONG_MS    1200
 #define VG_HOME_GESTURE_SLOP_PX VG_X(12)
+#define VG_PAGE_SWIPE_TRIGGER_PX VG_X(15)
 #define VG_HOLD_CONFIRM_MS      3000
 #define VG_ALARM_FRAME_COUNT    1
 
@@ -315,17 +301,13 @@ struct vg_app_s
   struct vg_event_s active;
   struct vg_event_s history[VG_HISTORY_SIZE];
   struct vg_fall_result_s last_fall;
-  struct vg_fall_detector_s fall_detector;
-  struct vg_imu_s imu;
+  struct vg_imu_guard_status_s imu_status;
   int history_count;
   int history_head;
   int countdown;
   int countdown_total;
   int tick_accum_ms;
   int countdown_last_value;
-  int imu_mag_mg;
-  int imu_gyro_dps;
-  int imu_last_error;
   uint64_t voice_last_trigger_ms;
   uint64_t button_down_ms;
   uint64_t button_arm_release_ms;
@@ -335,13 +317,13 @@ struct vg_app_s
   uint64_t bluetooth_last_refresh_ms;
   uint64_t home_press_start_ms;
   lv_point_t home_press_point;
+  lv_point_t bluetooth_press_point;
   uint64_t hold_cancel_start_ms;
   uint64_t hold_confirm_start_ms;
   enum vg_action_e hold_action;
   int hold_last_value;
   uint32_t next_id;
   bool has_fall_result;
-  bool imu_ready;
   bool button_armed;
   bool button_long_handled;
   bool sos_prompt_visible;
@@ -351,6 +333,7 @@ struct vg_app_s
   bool gesture_consumed;
   bool home_press_moved;
   bool home_edit_handled;
+  bool bluetooth_press_moved;
   enum vg_render_e pending_render;
   enum vg_page_e current_page;
   enum vg_page_e target_page;
@@ -387,12 +370,11 @@ struct vg_app_s
   lv_timer_t *render_timer;
   lv_obj_t *home_battery_img;
   lv_timer_t *charge_timer;
-  uint8_t charge_poll_cnt;
   bool charging;
 #if VG_BATTERY_PCT_ENABLED
   lv_obj_t *home_battery_pct_label;
-  int adc_fd;
-  int battery_pct;
+  struct vg_battery_status_s battery_status;
+  int battery_displayed_pct;
 #endif
 #ifdef CONFIG_INPUT_BUTTONS
   int button_fd;
@@ -414,7 +396,6 @@ static void vg_create_bluetooth_page(lv_obj_t *scr);
 static void __attribute__((unused)) vg_render_watchface_picker(void);
 static void vg_render_current(void);
 static void vg_navigation_gesture_cb(lv_event_t *event);
-static const char *vg_page_name(enum vg_page_e page);
 static void vg_nav_request(enum vg_page_e target, lv_dir_t dir,
                            const char *source);
 static void vg_schedule_render(enum vg_render_e render);
@@ -423,7 +404,6 @@ static void vg_render_timer_cb(lv_timer_t *timer);
 static uint64_t vg_uptime_ms(void);
 #if VG_BATTERY_PCT_ENABLED
 static lv_obj_t *vg_battery_pct_label_create(lv_obj_t *battery_img);
-static int vg_read_battery_mv(void);
 static void vg_update_battery_pct(void);
 #endif
 static void vg_charge_timer_cb(lv_timer_t *timer);
@@ -439,7 +419,6 @@ static void vg_update_bluetooth_page(bool force);
 static void vg_update_alarm_hold(void);
 static void vg_render_fall_hold_progress(enum vg_action_e action);
 static void vg_update_hold_progress_visuals(uint64_t now);
-static void vg_ble_service_poll(void);
 
 /****************************************************************************
  * Private Data
@@ -543,13 +522,6 @@ static const lv_image_dsc_t *g_touch_week_digits[7] =
   &velaguard_img_icon_touch_future_week_5,
   &velaguard_img_icon_touch_future_week_6,
 };
-
-static void vg_ble_service_poll(void)
-{
-  /* Framework setup is performed once during application startup.  This loop
-   * only advances asynchronous GATT and advertising state. */
-  vg_ble_process();
-}
 
 /****************************************************************************
  * Private Functions
@@ -1092,8 +1064,6 @@ static void vg_process_pending_render(void)
   if (g_vg.navigating)
     {
       g_vg.navigating = false;
-      printf("VelaGuard UI NAV: finished target=%s\n",
-             vg_page_name(g_vg.current_page));
     }
 }
 
@@ -1172,10 +1142,10 @@ static lv_obj_t *vg_battery_pct_label_create(lv_obj_t *battery_img)
                               LV_PART_MAIN);
   lv_obj_align(label, LV_ALIGN_CENTER, 0, 0);
 
-  /* Restore the last measured value; "0%" until the first poll. */
-  if (g_vg.battery_pct >= 0)
+  /* Restore the last task snapshot; "0%" until the first sample. */
+  if (g_vg.battery_status.percentage >= 0)
     {
-      snprintf(buf, sizeof(buf), "%d%%", g_vg.battery_pct);
+      snprintf(buf, sizeof(buf), "%d%%", g_vg.battery_status.percentage);
       lv_label_set_text(label, buf);
     }
   else
@@ -1244,7 +1214,6 @@ static void vg_home_event_cb(lv_event_t *event)
         {
           lv_indev_get_point(indev, &g_vg.home_press_point);
         }
-      printf("VelaGuard UI: home pressed\n");
       return;
     }
   else if (code == LV_EVENT_PRESSING)
@@ -1255,10 +1224,21 @@ static void vg_home_event_cb(lv_event_t *event)
       if (indev == NULL || g_vg.home_press_start_ms == 0)
         {
           return;
-        }
+      }
 
       lv_indev_get_point(indev, &point);
-      if (point.x - g_vg.home_press_point.x > VG_HOME_GESTURE_SLOP_PX ||
+      if (!g_vg.gesture_consumed &&
+          (point.x - g_vg.home_press_point.x > VG_PAGE_SWIPE_TRIGGER_PX ||
+           g_vg.home_press_point.x - point.x > VG_PAGE_SWIPE_TRIGGER_PX))
+        {
+          lv_dir_t dir = point.x > g_vg.home_press_point.x ?
+                         LV_DIR_RIGHT : LV_DIR_LEFT;
+
+          g_vg.home_press_moved = true;
+          vg_nav_request(VG_PAGE_BLUETOOTH, dir, "page-swipe");
+        }
+      else if (point.x - g_vg.home_press_point.x >
+               VG_HOME_GESTURE_SLOP_PX ||
           g_vg.home_press_point.x - point.x > VG_HOME_GESTURE_SLOP_PX ||
           point.y - g_vg.home_press_point.y > VG_HOME_GESTURE_SLOP_PX ||
           g_vg.home_press_point.y - point.y > VG_HOME_GESTURE_SLOP_PX)
@@ -1293,13 +1273,45 @@ static void vg_home_event_cb(lv_event_t *event)
 static void vg_bluetooth_event_cb(lv_event_t *event)
 {
   lv_event_code_t code = lv_event_get_code(event);
+  lv_indev_t *indev;
 
   lv_event_stop_bubbling(event);
 
   if (code == LV_EVENT_PRESSED)
     {
+      indev = lv_indev_active();
       g_vg.gesture_consumed = false;
-      printf("VelaGuard UI: bluetooth pressed\n");
+      g_vg.bluetooth_press_moved = false;
+      if (indev != NULL)
+        {
+          lv_indev_get_point(indev, &g_vg.bluetooth_press_point);
+        }
+      return;
+    }
+
+  if (code == LV_EVENT_PRESSING)
+    {
+      lv_point_t point;
+
+      indev = lv_indev_active();
+      if (indev == NULL || g_vg.bluetooth_press_moved)
+        {
+          return;
+        }
+
+      lv_indev_get_point(indev, &point);
+      if (point.x - g_vg.bluetooth_press_point.x >
+          VG_PAGE_SWIPE_TRIGGER_PX ||
+          g_vg.bluetooth_press_point.x - point.x >
+          VG_PAGE_SWIPE_TRIGGER_PX)
+        {
+          lv_dir_t dir = point.x > g_vg.bluetooth_press_point.x ?
+                         LV_DIR_RIGHT : LV_DIR_LEFT;
+
+          g_vg.bluetooth_press_moved = true;
+          vg_nav_request(VG_PAGE_HOME, dir, "page-swipe");
+        }
+
       return;
     }
 
@@ -1323,7 +1335,6 @@ static void vg_navigation_gesture_cb(lv_event_t *event)
   dir = indev == NULL ? LV_DIR_NONE : lv_indev_get_gesture_dir(indev);
   if (dir != LV_DIR_LEFT && dir != LV_DIR_RIGHT)
     {
-      printf("VelaGuard UI: gesture dir=%d ignored\n", (int)dir);
       return;
     }
 
@@ -1374,44 +1385,20 @@ static lv_obj_t *vg_action_button(lv_obj_t *parent, const char *text,
                                   int32_t h, uint32_t color,
                                   enum vg_action_e action);
 
-static const char *vg_page_name(enum vg_page_e page)
-{
-  switch (page)
-    {
-      case VG_PAGE_HOME:
-        return "home";
-
-      case VG_PAGE_BLUETOOTH:
-        return "bluetooth";
-
-      case VG_PAGE_WATCHFACE_PICKER:
-        return "watchface";
-
-      default:
-        return "unknown";
-    }
-}
-
 static void vg_nav_request(enum vg_page_e target, lv_dir_t dir,
                            const char *source)
 {
-  printf("VelaGuard UI NAV: request source=%s dir=%d current=%s target=%s busy=%d consumed=%d\n",
-         source, (int)dir, vg_page_name(g_vg.current_page),
-         vg_page_name(target), g_vg.navigating ? 1 : 0,
-         g_vg.gesture_consumed ? 1 : 0);
+  UNUSED(source);
 
   if (g_vg.navigating || g_vg.gesture_consumed ||
       target == g_vg.current_page)
     {
-      printf("VelaGuard UI NAV: dropped source=%s\n", source);
       return;
     }
 
   g_vg.navigating = true;
   g_vg.gesture_consumed = true;
   g_vg.target_page = target;
-  printf("VelaGuard UI NAV: accepted %s -> %s\n",
-         vg_page_name(g_vg.current_page), vg_page_name(target));
 
   switch (target)
     {
@@ -2352,6 +2339,7 @@ static void vg_create_bluetooth_page(lv_obj_t *scr)
   g_vg.bluetooth_root = root;
   lv_obj_add_flag(root, LV_OBJ_FLAG_CLICKABLE);
   lv_obj_add_event_cb(root, vg_bluetooth_event_cb, LV_EVENT_PRESSED, NULL);
+  lv_obj_add_event_cb(root, vg_bluetooth_event_cb, LV_EVENT_PRESSING, NULL);
   lv_obj_add_event_cb(root, vg_bluetooth_event_cb, LV_EVENT_GESTURE, NULL);
 
   vg_image_at(root, &velaguard_img_ble_icon, VG_X(18), VG_Y(31));
@@ -2533,9 +2521,9 @@ static void vg_update_imu_labels(void)
       return;
     }
 
-  if (!g_vg.imu_ready)
+  if (!g_vg.imu_status.ready)
     {
-      snprintf(line, sizeof(line), "IMU err=%d", g_vg.imu_last_error);
+      snprintf(line, sizeof(line), "IMU err=%d", g_vg.imu_status.last_error);
       lv_label_set_text(g_vg.imu_status_label, line);
       lv_label_set_text(g_vg.imu_value_label, "mag --mg  gyro --dps");
       lv_label_set_text(g_vg.imu_detail_label,
@@ -2546,7 +2534,7 @@ static void vg_update_imu_labels(void)
       return;
     }
 
-  if (g_vg.fall_detector.state != 0)
+  if (g_vg.imu_status.detector_state != 0)
     {
       color = VG_COLOR_WARN;
       lv_label_set_text(g_vg.imu_status_label, "疑似跌倒");
@@ -2560,96 +2548,54 @@ static void vg_update_imu_labels(void)
                               LV_PART_MAIN);
 
   snprintf(line, sizeof(line), "mag %dmg  gyro %ddps",
-           g_vg.imu_mag_mg, g_vg.imu_gyro_dps);
+           g_vg.imu_status.mag_mg, g_vg.imu_status.gyro_dps);
   lv_label_set_text(g_vg.imu_value_label, line);
 
   snprintf(line, sizeof(line), "peak %d/%d  姿%d  静%dms",
-           g_vg.fall_detector.peak_mg,
-           g_vg.fall_detector.peak_gyro_dps,
-           g_vg.fall_detector.posture_delta_deg,
-           g_vg.fall_detector.still_ms);
+           g_vg.imu_status.peak_mg,
+           g_vg.imu_status.peak_gyro_dps,
+           g_vg.imu_status.posture_delta_deg,
+           g_vg.imu_status.still_ms);
   lv_label_set_text(g_vg.imu_detail_label, line);
-}
-
-static void vg_imu_sample_to_fall(const struct vg_imu_sample_s *imu,
-                                  struct vg_fall_sample_s *fall)
-{
-  fall->timestamp_ms = imu->timestamp_ms;
-  fall->ax_mg = imu->ax_mg;
-  fall->ay_mg = imu->ay_mg;
-  fall->az_mg = imu->az_mg;
-  fall->gx_dps = imu->gx_dps;
-  fall->gy_dps = imu->gy_dps;
-  fall->gz_dps = imu->gz_dps;
 }
 
 static void vg_imu_ui_init(void)
 {
   int ret;
 
-  g_vg.imu.fd = -1;
-  vg_fall_init(&g_vg.fall_detector);
-
-  ret = vg_imu_open_guarded(&g_vg.imu,
-                            CONFIG_CONTEST2026_148_VELAGUARD_IMU_DEVPATH);
+  ret = vg_imu_guard_start(CONFIG_CONTEST2026_148_VELAGUARD_IMU_DEVPATH,
+                           VG_IMU_TASK_PRIORITY, VG_IMU_TASK_STACKSIZE);
   if (ret < 0)
     {
-      g_vg.imu_ready = false;
-      g_vg.imu_last_error = ret;
-      printf("VelaGuard IMU UI: open/probe failed: %d\n", ret);
+      g_vg.imu_status.ready = false;
+      g_vg.imu_status.last_error = ret;
+      printf("VelaGuard IMU: task start failed: %d\n", ret);
       vg_update_imu_labels();
       return;
     }
 
-  g_vg.imu_ready = true;
-  g_vg.imu_last_error = 0;
-  printf("VelaGuard IMU UI: addr=0x%02x whoami=0x%02x\n",
-         g_vg.imu.addr, g_vg.imu.whoami);
+  vg_imu_guard_set_enabled(true);
+  vg_imu_guard_get_status(&g_vg.imu_status);
+  printf("VelaGuard IMU: guard task started\n");
   vg_update_imu_labels();
 }
 
 static void vg_imu_timer_cb(lv_timer_t *timer)
 {
-  struct vg_imu_sample_s imu_sample;
-  struct vg_fall_sample_s fall_sample;
   struct vg_fall_result_s fall_result;
-  int ret;
 
   UNUSED(timer);
 
-  if (!g_vg.imu_ready)
+  /* The IMU guard task owns the device FD, sampling and fall detector.
+   * LVGL only snapshots its status and consumes a completed result. */
+  vg_imu_guard_set_enabled(g_vg.state == VG_STATE_GUARDING);
+  vg_imu_guard_get_status(&g_vg.imu_status);
+
+  if (g_vg.state == VG_STATE_GUARDING &&
+      vg_imu_guard_take_fall_result(&fall_result))
     {
-      return;
-    }
-
-  if (g_vg.state != VG_STATE_GUARDING)
-    {
-      return;
-    }
-
-  /* IMU now uses the kernel LSM6DSL driver on its dedicated I2C3 bus, so
-   * this read no longer needs any pinmux switching or shared-bus locking.
-   */
-
-  ret = vg_imu_read_guarded(&g_vg.imu, &imu_sample);
-  if (ret < 0)
-    {
-      g_vg.imu_ready = false;
-      g_vg.imu_last_error = ret;
-      printf("VelaGuard IMU UI: read failed: %d\n", ret);
-      vg_update_imu_labels();
-      return;
-    }
-
-  vg_imu_sample_to_fall(&imu_sample, &fall_sample);
-  g_vg.imu_mag_mg = vg_fall_accel_mag_mg(&fall_sample);
-  g_vg.imu_gyro_dps = vg_fall_gyro_sum_dps(&fall_sample);
-
-  if (vg_fall_process(&g_vg.fall_detector, &fall_sample, &fall_result))
-    {
-      printf("VelaGuard IMU UI: fall detected %s\n", fall_result.reason);
+      printf("VelaGuard IMU: fall detected %s\n", fall_result.reason);
       vg_trigger_fall_result(&fall_result);
-      return;
     }
 
   vg_update_imu_labels();
@@ -2783,64 +2729,26 @@ static void vg_buttons_poll(void)
 
 #if VG_BATTERY_PCT_ENABLED
 /****************************************************************************
- * Name: vg_read_battery_mv
- *
- * Description:
- *   Trigger one /dev/adc0 conversion and return the VBAT voltage in mV.
- *   Returns -1 on any failure.  The sample is the 12-bit result of the
- *   on-chip VBAT monitor channel (ADC_CHAN_VBAT) converted by the lower
- *   driver using its factory-default calibration.
- ****************************************************************************/
-
-static int vg_read_battery_mv(void)
-{
-  struct adc_msg_s msg;
-  ssize_t nread;
-
-  if (g_vg.adc_fd < 0)
-    {
-      return -1;
-    }
-
-  if (ioctl(g_vg.adc_fd, ANIOC_TRIGGER, 0) < 0)
-    {
-      return -1;
-    }
-
-  nread = read(g_vg.adc_fd, &msg, sizeof(msg));
-  if (nread != (ssize_t)sizeof(msg))
-    {
-      return -1;
-    }
-
-  return (int)msg.am_data;
-}
-
-/****************************************************************************
  * Name: vg_update_battery_pct
  *
  * Description:
- *   Read VBAT, map 3400..4200 mV linearly onto 0..100 % and snap the
- *   result to the nearest 20 % step.  Updates the percentage label.
+ *   Apply the most recent battery-task snapshot to the LVGL label.  The
+ *   battery task owns all ADC operations; this function must remain UI-only.
  ****************************************************************************/
 
 static void vg_update_battery_pct(void)
 {
-  int mv;
   int pct;
   char buf[8];
 
-  mv = vg_read_battery_mv();
-  if (mv < 0)
+  if (!g_vg.battery_status.ready)
     {
       return;
     }
 
-  /* No battery present (VBAT near ground): keep the percentage hidden. */
-  if (mv < VG_BATTERY_ABSENT_MV)
+  pct = g_vg.battery_status.percentage;
+  if (pct < 0)
     {
-      printf("VelaGuard: battery absent, VBAT=%d mV\n", mv);
-
       if (g_vg.home_battery_pct_label != NULL)
         {
           lv_obj_add_flag(g_vg.home_battery_pct_label,
@@ -2856,32 +2764,12 @@ static void vg_update_battery_pct(void)
                         LV_OBJ_FLAG_HIDDEN);
     }
 
-  if (mv >= VG_BATTERY_FULL_MV)
-    {
-      pct = 100;
-    }
-  else if (mv <= VG_BATTERY_EMPTY_MV)
-    {
-      pct = 0;
-    }
-  else
-    {
-      pct = (mv - VG_BATTERY_EMPTY_MV) * 100
-            / (VG_BATTERY_FULL_MV - VG_BATTERY_EMPTY_MV);
-    }
-
-  /* Snap to the nearest 20 % step: 0/20/40/60/80/100. */
-  pct = ((pct + VG_BATTERY_PCT_STEP / 2) / VG_BATTERY_PCT_STEP)
-        * VG_BATTERY_PCT_STEP;
-
-  printf("VelaGuard: battery VBAT=%d mV -> %d%%\n", mv, pct);
-
-  if (pct == g_vg.battery_pct)
+  if (pct == g_vg.battery_displayed_pct)
     {
       return;
     }
 
-  g_vg.battery_pct = pct;
+  g_vg.battery_displayed_pct = pct;
   if (g_vg.home_battery_pct_label != NULL)
     {
       snprintf(buf, sizeof(buf), "%d%%", pct);
@@ -2894,39 +2782,26 @@ static void vg_update_battery_pct(void)
  * Name: vg_charge_timer_cb
  *
  * Description:
- *   Single 500 ms timer: every 4th tick (2000 ms) polls the USB charger
- *   insertion pin (PA44 / VBUS_DET) and the battery voltage; while
- *   charging, each tick toggles the watchface battery icon (0.5 s visible
- *   / 0.5 s hidden).
+ *   The battery task owns VBUS and ADC polling.  This 500 ms UI timer only
+ *   consumes its snapshot and toggles the watchface battery icon while
+ *   charging.
  ****************************************************************************/
 
 static void vg_charge_timer_cb(lv_timer_t *timer)
 {
+#if VG_BATTERY_PCT_ENABLED
+  vg_battery_task_get_status(&g_vg.battery_status);
+#endif
+
   UNUSED(timer);
 
-  /* Poll charging state every 2000 ms = 4 * 500 ms. */
-  if (++g_vg.charge_poll_cnt >= (VG_CHARGE_POLL_MS / VG_CHARGE_BLINK_MS))
-    {
-      bool charging;
-
-      g_vg.charge_poll_cnt = 0;
-      charging = sifli_gpio_read(VG_VBUS_DET_PIN);
-      if (charging != g_vg.charging)
-        {
-          g_vg.charging = charging;
-
-          /* Keep the icon visible whenever not blinking. */
-          if (g_vg.home_battery_img != NULL)
-            {
-              lv_obj_clear_flag(g_vg.home_battery_img,
-                                LV_OBJ_FLAG_HIDDEN);
-            }
-        }
-
 #if VG_BATTERY_PCT_ENABLED
+  if (g_vg.battery_status.ready || g_vg.battery_status.sequence != 0)
+    {
+      g_vg.charging = g_vg.battery_status.charging;
       vg_update_battery_pct();
-#endif
     }
+#endif
 
   /* While charging, blink 0.5 s on / 0.5 s off. */
   if (g_vg.charging && g_vg.home_battery_img != NULL)
@@ -2940,6 +2815,7 @@ static void vg_charge_timer_cb(lv_timer_t *timer)
           lv_obj_add_flag(g_vg.home_battery_img, LV_OBJ_FLAG_HIDDEN);
         }
     }
+
 }
 
 static void vg_tick_cb(lv_timer_t *timer)
@@ -2977,7 +2853,7 @@ static void vg_tick_cb(lv_timer_t *timer)
   if (g_vg.state != VG_STATE_PREALERT)
     {
       g_vg.tick_accum_ms = 0;
-      return;
+      goto done;
     }
 
   if (g_vg.countdown_start_ms == 0)
@@ -2989,7 +2865,7 @@ static void vg_tick_cb(lv_timer_t *timer)
   total_ms = (uint64_t)g_vg.countdown_total * 1000;
   if (total_ms == 0)
     {
-      return;
+      goto done;
     }
 
   if (elapsed >= total_ms)
@@ -2997,7 +2873,7 @@ static void vg_tick_cb(lv_timer_t *timer)
       g_vg.countdown = 0;
       vg_update_countdown_visuals();
       vg_confirm_alert();
-      return;
+      goto done;
     }
 
   g_vg.countdown = g_vg.countdown_total - (int)(elapsed / 1000);
@@ -3012,6 +2888,9 @@ static void vg_tick_cb(lv_timer_t *timer)
     {
       vg_update_manual_sos_progress(now);
     }
+
+done:
+  return;
 }
 
 static void vg_update_manual_sos_progress(uint64_t now)
@@ -3075,32 +2954,11 @@ static void vg_audio_event_process(void)
     }
 }
 
-static int vg_wait_for_device(const char *path, unsigned int timeout_ms)
-{
-  unsigned int waited_ms = 0;
-
-  while (access(path, F_OK) < 0)
-    {
-      if (waited_ms >= timeout_ms)
-        {
-          printf("VelaGuard: timeout waiting for %s\n", path);
-          return -ETIMEDOUT;
-        }
-
-      usleep(VG_DEVICE_WAIT_STEP_MS * 1000);
-      waited_ms += VG_DEVICE_WAIT_STEP_MS;
-    }
-
-  printf("VelaGuard: device ready %s after %u ms\n", path, waited_ms);
-  return 0;
-}
-
 static void vg_audio_headless_loop(void)
 {
   printf("VelaGuard: UI unavailable; audio diagnostics remain active.\n");
   for (; ; )
     {
-      vg_ble_service_poll();
       vg_ble_process_time();
       vg_audio_event_process();
 
@@ -3114,9 +2972,6 @@ static void vg_audio_headless_loop(void)
 
 int main(int argc, FAR char *argv[])
 {
-  lv_nuttx_dsc_t info;
-  lv_nuttx_result_t result;
-  bool input_ready = false;
   int warmup;
   int ret;
 
@@ -3134,30 +2989,13 @@ int main(int argc, FAR char *argv[])
   g_vg.button_fd = -1;
 #endif
 
-  if (lv_is_initialized())
-    {
-      printf("VelaGuard: LVGL already initialized.\n");
-      return -1;
-    }
-
 #ifdef NEED_BOARDINIT
   boardctl(BOARDIOC_INIT, 0);
 #endif
 
-#ifdef CONFIG_LV_USE_NUTTX_LCD
-  vg_wait_for_device("/dev/lcd0", VG_DEVICE_WAIT_MS);
-#endif
-
-#ifdef CONFIG_INPUT_TOUCHSCREEN
-  /* Board bring-up registers FT6146 asynchronously.  lv_nuttx_init() only
-   * attempts to open input_path once, so starting LVGL before /dev/input0
-   * exists leaves the UI permanently without an input device.
-   */
-
-  input_ready = vg_wait_for_device(
-    CONFIG_CONTEST2026_148_VELAGUARD_INPUT_DEVPATH,
-    VG_DEVICE_WAIT_MS) == 0;
-#endif
+  vg_ui_prepare("/dev/lcd0",
+                CONFIG_CONTEST2026_148_VELAGUARD_INPUT_DEVPATH,
+                VG_DEVICE_WAIT_MS, VG_DEVICE_WAIT_STEP_MS);
 
   /* Audio execution runs in its own task.  Create it before Bluetooth
    * bring-up; when MIC capture is enabled, wait until the capture pipeline
@@ -3174,6 +3012,17 @@ int main(int argc, FAR char *argv[])
       printf("VelaGuard audio: capture not ready (ret=%d); continuing\n",
              ret);
     }
+#endif
+
+#if VG_BATTERY_PCT_ENABLED
+  ret = vg_battery_task_start(VG_BATTERY_TASK_PRIORITY,
+                              VG_BATTERY_TASK_STACKSIZE);
+  if (ret < 0)
+    {
+      printf("VelaGuard battery: task start failed: %d\n", ret);
+    }
+
+  g_vg.battery_displayed_pct = -1;
 #endif
 
   /* Keep Framework/H4 ownership and initialization ahead of LVGL.  Retrying
@@ -3194,42 +3043,11 @@ int main(int argc, FAR char *argv[])
   return 0;
 #endif
 
-  lv_init();
-  lv_nuttx_dsc_init(&info);
-
-#ifdef CONFIG_LV_USE_NUTTX_LCD
-  info.fb_path = "/dev/lcd0";
-#endif
-
-#ifdef CONFIG_INPUT_TOUCHSCREEN
-  if (input_ready)
+  ret = vg_ui_init(CONFIG_CONTEST2026_148_VELAGUARD_INPUT_POLL_MS);
+  if (ret < 0)
     {
-      info.input_path = CONFIG_CONTEST2026_148_VELAGUARD_INPUT_DEVPATH;
-    }
-#endif
-
-  lv_nuttx_init(&info, &result);
-  if (result.disp == NULL)
-    {
-      printf("VelaGuard: LVGL NuttX display initialization failed.\n");
-      lv_deinit();
       vg_audio_headless_loop();
       return 1;
-    }
-
-  if (result.indev != NULL)
-    {
-      lv_timer_t *read_timer = lv_indev_get_read_timer(result.indev);
-
-      if (read_timer != NULL)
-        {
-          lv_timer_set_period(read_timer,
-                              CONFIG_CONTEST2026_148_VELAGUARD_INPUT_POLL_MS);
-        }
-    }
-  else
-    {
-      printf("VelaGuard: LVGL touch input initialization failed\n");
     }
 
 #ifdef CONFIG_INPUT_BUTTONS
@@ -3247,42 +3065,33 @@ int main(int argc, FAR char *argv[])
   g_vg.render_timer = lv_timer_create(vg_render_timer_cb, 1, NULL);
   lv_timer_pause(g_vg.render_timer);
 
-  /* USB charging detection: one 500 ms timer polls VBUS_DET every 2 s and
-   * blinks the battery icon (0.5 s on / 0.5 s off) while charging. */
-  g_vg.charging = sifli_gpio_read(VG_VBUS_DET_PIN);
-  g_vg.charge_poll_cnt = 0;
+  /* The battery task samples VBUS and VBAT independently.  This timer only
+   * reflects its cached state in the UI and blinks while charging. */
   g_vg.charge_timer = lv_timer_create(vg_charge_timer_cb,
                                       VG_CHARGE_BLINK_MS, NULL);
 
 #if VG_BATTERY_PCT_ENABLED
-  /* The same 2 s poll reads the battery voltage from /dev/adc0 (VBAT
-   * channel) and shows the percentage over the battery icon. */
-  g_vg.adc_fd = open("/dev/adc0", O_RDONLY);
-  if (g_vg.adc_fd < 0)
-    {
-      printf("VelaGuard: open /dev/adc0 failed, battery %% disabled\n");
-    }
-
-  g_vg.battery_pct = -1;
+  vg_battery_task_get_status(&g_vg.battery_status);
   vg_update_battery_pct();
 #endif
 
   for (warmup = 0; warmup < 3; warmup++)
     {
-      lv_timer_handler();
+      vg_ui_process();
       usleep(20000);
     }
 
   for (; ; )
     {
-      vg_ble_service_poll();
+      uint32_t idle;
+
       vg_ble_process_time();
 
       /* Audio work lives in the audio task; this loop only drains the
        * events it reports (e.g. voice-SOS keyword detections). */
       vg_audio_event_process();
 
-      uint32_t idle = lv_timer_handler();
+      idle = vg_ui_process();
 
       idle = idle ? idle : 1;
       if (idle > CONFIG_CONTEST2026_148_VELAGUARD_LOOP_SLEEP_MAX_MS)

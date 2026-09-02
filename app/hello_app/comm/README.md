@@ -17,10 +17,13 @@ framework，`velaguard_ble.c` 只作为 VelaGuard 自定义 GATT Service 的 ada
 设备端启动流程：
 
 ```text
-velaguard main loop
+velaguard main task
   -> vg_ble_init()
   -> Framework instance / adapter callback setup (only once)
   -> framework enable
+  -> vg_ble_task_start()
+  -> main posts enable/call commands to BLE command queue
+  -> BLE task advances advertising and outgoing notifications
   -> wait adapter ready
   -> register VelaGuard GATT service
   -> start advertising
@@ -58,8 +61,8 @@ SOS 的本地告警页面与 BLE `CALL_REQUEST` 上报不依赖麦克风采集�
 - 不直接调用 zblue 私有 API 或 `bt_enable()`，不直接操作 H4 UART、controller、ring
   buffer，也不在应用层实现 Framework 的事件循环。
 - Framework 的接收、ATT/GATT 请求和 HCI 处理由官方框架线程负责；VelaGuard 主任务只处理
-  一次性初始化后的业务状态、连接状态、心跳和待发送事件。回调中只更新状态/入队，耗时操作
-  不放入框架回调。
+  一次性初始化、UI 状态查询、SOS/开关命令投递和校时落地。专用 BLE task 通过命令队列独占
+  广播状态、连接状态、心跳和待发送事件。回调中只更新状态/入队，耗时操作不放入框架回调。
 - 设备是 BLE Peripheral/GATT Server，App 是 Central/GATT Client。只打开 BLE 外设所需
   配置，避免启用无业务需要的 BR/EDR、GATT Client、扫描和测试命令。
 - `vendor/sifli`、NuttX 和 Framework 的底层改动不能直接提交到主仓库；必须放到

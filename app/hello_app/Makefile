@@ -11,10 +11,13 @@ MODULE    = $(CONFIG_LVX_USE_DEMO_CONTEST2026_148_VELAGUARD)
 
 MAINSRC = core$(DELIM)velaguard_main.c
 CSRCS = core$(DELIM)velaguard_boot.c
+CSRCS += core$(DELIM)velaguard_ui.c
 CSRCS += algorithm$(DELIM)velaguard_fall.c
 CSRCS += audio$(DELIM)velaguard_audio.c
+CSRCS += sensors$(DELIM)velaguard_battery.c
 CSRCS += sensors$(DELIM)velaguard_imu.c
 CSRCS += comm$(DELIM)velaguard_ble.c
+CSRCS += comm$(DELIM)velaguard_ble_task.c
 CSRCS += ui$(DELIM)velaguard_font_30.c
 CSRCS += $(wildcard ui$(DELIM)velaguard_img_*.c)
 

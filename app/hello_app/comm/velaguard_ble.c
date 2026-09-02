@@ -19,6 +19,7 @@
 #include "bt_adapter.h"
 #include "bt_gatts.h"
 #include "bt_le_advertiser.h"
+#include "velaguard_ble_task.h"
 
 #define VG_BLE_NAME                 "VelaGuard"
 #define VG_BLE_COMMAND_CALL_REQUEST 1
@@ -26,7 +27,10 @@
 #define VG_BLE_ADDR_TEXT_LEN        18
 #define VG_BLE_HEARTBEAT_MS         1000
 #define VG_BLE_TEST_NOTIFY_MS       1000
-#define VG_BLE_CCC_SETTLE_MS         1500
+/* Leave a short window for the ATT CCC write response, then send the first
+ * status heartbeat promptly so the central does not time out its subscribe
+ * flow while waiting for it. */
+#define VG_BLE_CCC_SETTLE_MS         100
 #define VG_BLE_ADDR_RETRY_MS         1000
 #define VG_BLE_ADV_RETRY_SKIP       250
 #define VG_BLE_ADV_RESTART_SKIP     125
@@ -84,8 +88,6 @@ static bool g_vg_local_addr_unavailable_logged;
 static volatile bool g_vg_test_notify_enabled;
 static volatile bool g_vg_test_probe_seen;
 static volatile bool g_vg_notify_settle_pending;
-static volatile bool g_vg_enable_request_pending;
-static volatile bool g_vg_enable_request_target;
 static volatile bool g_vg_start_advertising_pending;
 static volatile bool g_vg_time_sync_pending;
 static unsigned int g_vg_adv_retry_skip;
@@ -185,9 +187,15 @@ static void vg_ble_cache_local_address(void)
 {
   bt_address_t addr;
   uint64_t now;
+  irqstate_t irqstate;
+  char local_addr[VG_BLE_ADDR_TEXT_LEN];
+  bool address_cached;
 
-  if (g_vg_local_addr[0] != '\0' &&
-      strcmp(g_vg_local_addr, "pending") != 0)
+  irqstate = enter_critical_section();
+  address_cached = g_vg_local_addr[0] != '\0' &&
+                   strcmp(g_vg_local_addr, "pending") != 0;
+  leave_critical_section(irqstate);
+  if (address_cached)
     {
       return;
     }
@@ -208,22 +216,28 @@ static void vg_ble_cache_local_address(void)
 
   memset(&addr, 0, sizeof(addr));
   bt_adapter_get_address(g_vg_bt, &addr);
-  if (bt_addr_is_empty(&addr) || bt_addr_ba2str(&addr, g_vg_local_addr) < 0)
+  if (bt_addr_is_empty(&addr) || bt_addr_ba2str(&addr, local_addr) < 0)
     {
       if (!g_vg_local_addr_unavailable_logged)
         {
           printf("VelaGuard BLE: local adapter address unavailable\n");
           g_vg_local_addr_unavailable_logged = true;
         }
+
+      irqstate = enter_critical_section();
       strlcpy(g_vg_local_addr, "pending", sizeof(g_vg_local_addr));
+      leave_critical_section(irqstate);
       return;
     }
 
   g_vg_local_addr_unavailable_logged = false;
+  irqstate = enter_critical_section();
+  strlcpy(g_vg_local_addr, local_addr, sizeof(g_vg_local_addr));
   g_vg_local_addr_default =
     strcmp(g_vg_local_addr, "CD:AB:78:56:34:12") == 0 ||
     strcmp(g_vg_local_addr, "12:34:56:78:AB:CD") == 0;
-  printf("VelaGuard BLE: local adapter address %s%s\n", g_vg_local_addr,
+  leave_critical_section(irqstate);
+  printf("VelaGuard BLE: local adapter address %s%s\n", local_addr,
          g_vg_local_addr_default ? " (default/test)" : "");
 }
 
@@ -735,7 +749,11 @@ static int vg_ble_start_advertising(void)
   return 0;
 }
 
-int vg_ble_init(void)
+/* Only vg_ble_process(), running in the BLE task, may call this function.
+ * Public callers must use vg_ble_request_set_enabled(). */
+static int vg_ble_set_enabled(bool enabled);
+
+int vg_ble_framework_init(void)
 {
   bt_status_t status;
   int ret;
@@ -777,7 +795,24 @@ int vg_ble_init(void)
   g_vg_start_advertising_pending = g_vg_adapter_ready;
   printf("VelaGuard BLE: framework enable requested status=%d ready=%d\n",
          status, g_vg_adapter_ready ? 1 : 0);
+
   return 0;
+}
+
+int vg_ble_init(void)
+{
+  int ret;
+
+  /* bluetooth_create_instance() establishes Framework/libuv ownership for
+   * the calling task.  Start the owner here, but let that task create and
+   * drive the Framework so no GATT or advertising call crosses threads. */
+  ret = vg_ble_task_start();
+  if (ret < 0)
+    {
+      printf("VelaGuard BLE: task start failed ret=%d\n", ret);
+    }
+
+  return ret;
 }
 
 void vg_ble_process(void)
@@ -785,17 +820,6 @@ void vg_ble_process(void)
   int ret;
   bool notifications_ready;
   uint64_t now_ms;
-
-  if (g_vg_enable_request_pending)
-    {
-      bool target = g_vg_enable_request_target;
-
-      g_vg_enable_request_pending = false;
-      ret = vg_ble_set_enabled(target);
-      printf("VelaGuard BLE: async enable target=%d ret=%d enabled=%d adv=%d connected=%d\n",
-             target ? 1 : 0, ret, g_vg_enabled ? 1 : 0,
-             g_vg_advertising ? 1 : 0, g_vg_connected ? 1 : 0);
-    }
 
   if (!g_vg_initialized || !g_vg_enabled)
     {
@@ -967,6 +991,25 @@ void vg_ble_process(void)
     }
 }
 
+void vg_ble_process_enable_command(bool enabled)
+{
+  int ret = vg_ble_set_enabled(enabled);
+
+  printf("VelaGuard BLE: async enable target=%d ret=%d enabled=%d adv=%d connected=%d\n",
+         enabled ? 1 : 0, ret, g_vg_enabled ? 1 : 0,
+         g_vg_advertising ? 1 : 0, g_vg_connected ? 1 : 0);
+}
+
+void vg_ble_process_call_command(const struct vg_ble_call_packet_s *packet)
+{
+  irqstate_t irqstate;
+
+  irqstate = enter_critical_section();
+  g_vg_last_packet = *packet;
+  g_vg_call_pending = true;
+  leave_critical_section(irqstate);
+}
+
 void vg_ble_process_ui(void)
 {
   struct timespec ts;
@@ -1015,28 +1058,42 @@ void vg_ble_process_time(void)
 
 void vg_ble_set_fall_status(bool active)
 {
+  irqstate_t irqstate = enter_critical_section();
   g_vg_fall_status_active = active;
+  leave_critical_section(irqstate);
 }
 
 bool vg_ble_is_connected(void)
 {
-  return g_vg_connected;
+  irqstate_t irqstate = enter_critical_section();
+  bool connected = g_vg_connected;
+  leave_critical_section(irqstate);
+  return connected;
 }
 
 bool vg_ble_is_initialized(void)
 {
-  return g_vg_initialized;
+  irqstate_t irqstate = enter_critical_section();
+  bool initialized = g_vg_initialized;
+  leave_critical_section(irqstate);
+  return initialized;
 }
 
 bool vg_ble_is_enabled(void)
 {
-  return g_vg_enabled;
+  irqstate_t irqstate = enter_critical_section();
+  bool enabled = g_vg_enabled;
+  leave_critical_section(irqstate);
+  return enabled;
 }
 
 bool vg_ble_is_ready(void)
 {
-  return g_vg_initialized && g_vg_enabled && g_vg_adapter_ready &&
-         g_vg_service_registered;
+  irqstate_t irqstate = enter_critical_section();
+  bool ready = g_vg_initialized && g_vg_enabled && g_vg_adapter_ready &&
+               g_vg_service_registered;
+  leave_critical_section(irqstate);
+  return ready;
 }
 
 void vg_ble_get_device_name(char *buf, size_t len)
@@ -1049,15 +1106,18 @@ void vg_ble_get_device_name(char *buf, size_t len)
 
 bool vg_ble_is_advertising(void)
 {
-  return g_vg_advertising || g_vg_adv_starting;
+  irqstate_t irqstate = enter_critical_section();
+  bool advertising = g_vg_advertising || g_vg_adv_starting;
+  leave_critical_section(irqstate);
+  return advertising;
 }
 
 bool vg_ble_has_pending_enable_request(void)
 {
-  return g_vg_enable_request_pending;
+  return vg_ble_task_has_pending_enable();
 }
 
-int vg_ble_set_enabled(bool enabled)
+static int vg_ble_set_enabled(bool enabled)
 {
   int ret = 0;
 
@@ -1065,7 +1125,7 @@ int vg_ble_set_enabled(bool enabled)
     {
       if (!g_vg_initialized)
         {
-          return vg_ble_init();
+          return -EHOSTDOWN;
         }
 
       if (g_vg_enabled)
@@ -1115,12 +1175,13 @@ int vg_ble_set_enabled(bool enabled)
 
 void vg_ble_request_set_enabled(bool enabled)
 {
-  g_vg_enable_request_target = enabled;
-  g_vg_enable_request_pending = true;
+  (void)vg_ble_task_send_enable(enabled);
 }
 
 void vg_ble_get_local_address(char *buf, size_t len)
 {
+  irqstate_t irqstate;
+
   if (buf == NULL || len == 0)
     {
       return;
@@ -1132,19 +1193,23 @@ void vg_ble_get_local_address(char *buf, size_t len)
       return;
     }
 
-  if (g_vg_local_addr[0] == '\0' ||
-      strcmp(g_vg_local_addr, "pending") == 0)
-    {
-      vg_ble_cache_local_address();
-    }
-
+  /* Address probing belongs to the BLE task.  The UI/main task only reads
+   * the cached value, so it never calls into the Bluetooth Framework. */
+  irqstate = enter_critical_section();
   strlcpy(buf, g_vg_local_addr[0] == '\0' ? "pending" :
           g_vg_local_addr, len);
+  leave_critical_section(irqstate);
 }
 
 bool vg_ble_local_address_is_default(void)
 {
-  return g_vg_local_addr_default;
+  irqstate_t irqstate;
+  bool local_address_is_default;
+
+  irqstate = enter_critical_section();
+  local_address_is_default = g_vg_local_addr_default;
+  leave_critical_section(irqstate);
+  return local_address_is_default;
 }
 
 int vg_ble_request_call(uint8_t event_type, uint8_t risk,
@@ -1152,9 +1217,21 @@ int vg_ble_request_call(uint8_t event_type, uint8_t risk,
                         uint32_t uptime_ms, bool user_confirmed)
 {
   struct vg_ble_call_packet_s packet;
+  int ret;
+  bool initialized;
+  bool enabled;
+  bool connected;
+  bool notify_enabled;
   irqstate_t irqstate;
 
-  if (!g_vg_initialized || !g_vg_enabled)
+  irqstate = enter_critical_section();
+  initialized = g_vg_initialized;
+  enabled = g_vg_enabled;
+  connected = g_vg_connected;
+  notify_enabled = g_vg_notify_enabled;
+  leave_critical_section(irqstate);
+
+  if (!initialized || !enabled)
     {
       return -EHOSTDOWN;
     }
@@ -1178,12 +1255,13 @@ int vg_ble_request_call(uint8_t event_type, uint8_t risk,
          ((uint8_t *)&packet.uptime_ms)[0], ((uint8_t *)&packet.uptime_ms)[1],
          ((uint8_t *)&packet.uptime_ms)[2], ((uint8_t *)&packet.uptime_ms)[3]);
 
-  irqstate = enter_critical_section();
-  g_vg_last_packet = packet;
-  g_vg_call_pending = true;
-  leave_critical_section(irqstate);
+  ret = vg_ble_task_send_call(&packet);
+  if (ret < 0)
+    {
+      return ret;
+    }
 
-  if (!g_vg_connected || !g_vg_notify_enabled)
+  if (!connected || !notify_enabled)
     {
       printf("VelaGuard BLE: call request queued; phone not ready\n");
       return -ENOTCONN;

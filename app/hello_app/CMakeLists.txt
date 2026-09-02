@@ -85,13 +85,16 @@ if(CONFIG_LVX_USE_DEMO_CONTEST2026_148_VELAGUARD)
     SRCS
     core/velaguard_main.c
     core/velaguard_boot.c
+    core/velaguard_ui.c
     algorithm/velaguard_fall.c
     audio/velaguard_audio.c
     audio/velaguard_audio_feedback.c
     audio/velaguard_audio_task.c
     audio/velaguard_wav_parser.c
+    sensors/velaguard_battery.c
     sensors/velaguard_imu.c
     comm/velaguard_ble.c
+    comm/velaguard_ble_task.c
     comm/velaguard_ble_compat.c
     ${VELAGUARD_UI_SRCS})
 

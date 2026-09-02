@@ -34,7 +34,12 @@ struct vg_ble_call_packet_s
 } __attribute__((packed));
 
 int vg_ble_init(void);
+/* Called only by the BLE task before it starts processing commands. */
+int vg_ble_framework_init(void);
 void vg_ble_process(void);
+/* Called only by the BLE task after it dequeues a command. */
+void vg_ble_process_enable_command(bool enabled);
+void vg_ble_process_call_command(const struct vg_ble_call_packet_s *packet);
 void vg_ble_process_ui(void);
 void vg_ble_process_time(void);
 void vg_ble_set_fall_status(bool active);
@@ -44,7 +49,6 @@ bool vg_ble_is_enabled(void);
 bool vg_ble_is_ready(void);
 bool vg_ble_is_advertising(void);
 bool vg_ble_has_pending_enable_request(void);
-int vg_ble_set_enabled(bool enabled);
 void vg_ble_request_set_enabled(bool enabled);
 void vg_ble_get_local_address(char *buf, size_t len);
 void vg_ble_get_device_name(char *buf, size_t len);

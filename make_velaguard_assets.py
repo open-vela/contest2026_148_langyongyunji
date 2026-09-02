@@ -1,4 +1,6 @@
+import argparse
 import os
+import re
 from pathlib import Path
 from PIL import Image, ImageDraw, ImageFont
 
@@ -66,12 +68,30 @@ def scale_watch_image(path):
     return im.resize((tw, th), Image.LANCZOS)
 
 
-def write_lvgl_image(name, im):
+def write_lvgl_image(name, im, flatten_on_black=False):
     im = im.convert("RGBA")
     w, h = im.size
     data = bytearray()
-    for r, g, b, a in im.getdata():
-        data.extend([b, g, r, a])
+    opaque = flatten_on_black or all(a == 255 for _, _, _, a in im.getdata())
+    if opaque:
+        for r, g, b, a in im.getdata():
+            if flatten_on_black:
+                r = (r * a + 127) // 255
+                g = (g * a + 127) // 255
+                b = (b * a + 127) // 255
+            rgb565 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+            data.extend([rgb565 & 0xff, rgb565 >> 8])
+        color_format = "RGB565"
+        stride = w * 2
+    else:
+        alpha = bytearray()
+        for r, g, b, a in im.getdata():
+            rgb565 = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+            data.extend([rgb565 & 0xff, rgb565 >> 8])
+            alpha.append(a)
+        data.extend(alpha)
+        color_format = "RGB565A8"
+        stride = w * 2
 
     out = UI / f"{name}.c"
     with out.open("w", encoding="ascii", newline="\n") as f:
@@ -85,16 +105,108 @@ def write_lvgl_image(name, im):
         f.write("};\n\n")
         f.write(f"const lv_image_dsc_t {name} =\n{{\n")
         f.write("  .header.magic = LV_IMAGE_HEADER_MAGIC,\n")
-        f.write("  .header.cf = LV_COLOR_FORMAT_ARGB8888,\n")
+        f.write(f"  .header.cf = LV_COLOR_FORMAT_{color_format},\n")
         f.write("  .header.flags = 0,\n")
         f.write(f"  .header.w = {w},\n")
         f.write(f"  .header.h = {h},\n")
-        f.write(f"  .header.stride = {w * 4},\n")
+        f.write(f"  .header.stride = {stride},\n")
         f.write(f"  .data_size = sizeof({name}_data),\n")
         f.write(f"  .data = {name}_data,\n")
         f.write("};\n")
 
-    print(f"{name} {w}x{h}")
+    print(f"{name} {w}x{h} {color_format}")
+
+
+def optimize_existing_images():
+    """Convert generated ARGB8888 images to native 16-bit LVGL formats."""
+    converted = []
+    skipped = []
+
+    for out in sorted(UI.glob("velaguard_img_*.c")):
+        text = out.read_text(encoding="ascii")
+        if "LV_COLOR_FORMAT_ARGB8888" not in text:
+            continue
+
+        match = re.search(r"static const uint8_t (\w+)_data\[\] =\s*\{(.*?)\};", text, re.S)
+        if match is None:
+            skipped.append(f"{out.name}: unrecognized data")
+            continue
+
+        source = bytes(int(value, 16) for value in re.findall(r"0x([0-9a-fA-F]{2})", match.group(2)))
+        if len(source) % 4 != 0:
+            skipped.append(f"{out.name}: invalid ARGB8888 byte count")
+            continue
+        rgb565 = bytearray()
+        alpha = bytearray()
+        for offset in range(0, len(source), 4):
+            b, g, r, _ = source[offset:offset + 4]
+            value = ((r >> 3) << 11) | ((g >> 2) << 5) | (b >> 3)
+            rgb565.extend([value & 0xff, value >> 8])
+            alpha.append(source[offset + 3])
+
+        opaque = all(value == 255 for value in alpha)
+        if opaque:
+            color_format = "RGB565"
+            converted_data = rgb565
+        else:
+            color_format = "RGB565A8"
+            converted_data = rgb565 + alpha
+
+        payload = "\n".join(
+            "  " + ", ".join(f"0x{value:02x}" for value in converted_data[i:i + 16]) +
+            ("," if i + 16 < len(converted_data) else "")
+            for i in range(0, len(converted_data), 16)
+        )
+        text = text[:match.start(2)] + "\n" + payload + "\n" + text[match.end(2):]
+        text = text.replace("LV_COLOR_FORMAT_ARGB8888", f"LV_COLOR_FORMAT_{color_format}")
+        width = int(re.search(r"\.header\.w = (\d+)", text).group(1))
+        text = re.sub(r"(\.header\.stride = )\d+", rf"\g<1>{width * 2}", text)
+        out.write_text(text, encoding="ascii", newline="\n")
+        converted.append((out.name, color_format, len(source), len(converted_data)))
+
+    for name, color_format, before, after in converted:
+        print(f"converted {name} ({color_format}): {before} -> {after} bytes")
+    for entry in skipped:
+        print(f"kept {entry}")
+    print(f"optimized {len(converted)} image(s)")
+
+
+def flatten_existing_backgrounds():
+    """Flatten full-screen backgrounds whose parent is known to be black."""
+    for name in ("velaguard_img_bg_alarm",):
+        out = UI / f"{name}.c"
+        text = out.read_text(encoding="ascii")
+        if "LV_COLOR_FORMAT_RGB565A8" not in text:
+            continue
+
+        match = re.search(r"static const uint8_t (\w+)_data\[\] =\s*\{(.*?)\};", text, re.S)
+        width = int(re.search(r"\.header\.w = (\d+)", text).group(1))
+        height = int(re.search(r"\.header\.h = (\d+)", text).group(1))
+        source = bytes(int(value, 16) for value in re.findall(r"0x([0-9a-fA-F]{2})", match.group(2)))
+        pixel_count = width * height
+        if len(source) != pixel_count * 3:
+            raise ValueError(f"{out.name}: invalid RGB565A8 byte count")
+
+        flattened = bytearray()
+        alpha_offset = pixel_count * 2
+        for index in range(pixel_count):
+            color = source[index * 2] | (source[index * 2 + 1] << 8)
+            alpha = source[alpha_offset + index]
+            red = ((color >> 11) & 0x1f) * alpha // 255
+            green = ((color >> 5) & 0x3f) * alpha // 255
+            blue = (color & 0x1f) * alpha // 255
+            color = (red << 11) | (green << 5) | blue
+            flattened.extend([color & 0xff, color >> 8])
+
+        payload = "\n".join(
+            "  " + ", ".join(f"0x{value:02x}" for value in flattened[i:i + 16]) +
+            ("," if i + 16 < len(flattened) else "")
+            for i in range(0, len(flattened), 16)
+        )
+        text = text[:match.start(2)] + "\n" + payload + "\n" + text[match.end(2):]
+        text = text.replace("LV_COLOR_FORMAT_RGB565A8", "LV_COLOR_FORMAT_RGB565")
+        out.write_text(text, encoding="ascii", newline="\n")
+        print(f"flattened {out.name}: {len(source)} -> {len(flattened)} bytes")
 
 
 def cjk_font_path():
@@ -269,18 +381,28 @@ def write_count_digits():
         write_lvgl_image(f"velaguard_img_count_{digit}", img)
 
 
-write_lvgl_image("velaguard_img_bg_alarm", resize_exact(find("Group 4251.png"), SCREEN))
-write_lvgl_image("velaguard_img_ble_icon", fit_canvas(find("蓝牙ico.png"), (56, 56), "contain"))
-write_lvgl_image("velaguard_img_fall_icon", fit_canvas(find("跌倒 (1).png"), (96, 96), "contain"))
-write_alarm_frames()
-write_count_digits()
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--optimize-existing", action="store_true")
+    args = parser.parse_args()
+    if args.optimize_existing:
+        optimize_existing_images()
+        flatten_existing_backgrounds()
+        raise SystemExit(0)
 
-write_lvgl_image("velaguard_img_thumb_rainbow_rain",
-                 fit_canvas(find("icon_rainbow_rain_clock.png"), THUMB, "contain"))
-write_lvgl_image("velaguard_img_thumb_touch_future",
-                 fit_canvas(find("icon_touch_future_clock.png"), THUMB, "contain"))
+    write_lvgl_image("velaguard_img_bg_alarm", resize_exact(find("Group 4251.png"), SCREEN),
+                     flatten_on_black=True)
+    write_lvgl_image("velaguard_img_ble_icon", fit_canvas(find("蓝牙ico.png"), (56, 56), "contain"))
+    write_lvgl_image("velaguard_img_fall_icon", fit_canvas(find("跌倒 (1).png"), (96, 96), "contain"))
+    write_alarm_frames()
+    write_count_digits()
 
-rainbow_assets = [
+    write_lvgl_image("velaguard_img_thumb_rainbow_rain",
+                     fit_canvas(find("icon_rainbow_rain_clock.png"), THUMB, "contain"))
+    write_lvgl_image("velaguard_img_thumb_touch_future",
+                     fit_canvas(find("icon_touch_future_clock.png"), THUMB, "contain"))
+
+    rainbow_assets = [
     "icon_rainbow_rain_battery_5.png",
     "icon_rainbow_rain_blue_0.png",
     "icon_rainbow_rain_blue_1.png",
@@ -302,14 +424,14 @@ rainbow_assets = [
     "icon_rainbow_rain_white_7.png",
     "icon_rainbow_rain_white_8.png",
     "icon_rainbow_rain_white_9.png",
-]
-write_lvgl_image("velaguard_img_icon_rainbow_rain_bg",
-                 scale_watch_image(find("icon_rainbow_rain_bg_meteor_sharp.png")))
-for name in rainbow_assets:
-    path = find(name)
-    write_lvgl_image(symbol(path), scale_watch_image(path))
+    ]
+    write_lvgl_image("velaguard_img_icon_rainbow_rain_bg",
+                     scale_watch_image(find("icon_rainbow_rain_bg_meteor_sharp.png")))
+    for name in rainbow_assets:
+        path = find(name)
+        write_lvgl_image(symbol(path), scale_watch_image(path))
 
-touch_future_assets = [
+    touch_future_assets = [
     "icon_touch_future_battery_5.png",
     "icon_touch_future_colon.png",
     "icon_touch_future_date_0.png",
@@ -341,9 +463,9 @@ touch_future_assets = [
     "icon_touch_future_week_4.png",
     "icon_touch_future_week_5.png",
     "icon_touch_future_week_6.png",
-]
-for name in touch_future_assets:
-    path = find(name)
-    write_lvgl_image(symbol(path), scale_watch_image(path))
+    ]
+    for name in touch_future_assets:
+        path = find(name)
+        write_lvgl_image(symbol(path), scale_watch_image(path))
 
-write_font()
+    write_font()
