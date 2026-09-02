@@ -1,5 +1,5 @@
 diff --git a/chips/sf32lb52/sf32lb_adc.c b/chips/sf32lb52/sf32lb_adc.c
-index 4da8ae6..3fc27fc 100644
+index 4da8ae6..6644e72 100644
 --- a/chips/sf32lb52/sf32lb_adc.c
 +++ b/chips/sf32lb52/sf32lb_adc.c
 @@ -42,6 +42,8 @@ struct adc_info_s
@@ -20,10 +20,10 @@ index 4da8ae6..3fc27fc 100644
 +     * internal divider never saturates for batteries up to ~4.7 V. */
 +    __HAL_ADC_SET_LDO_REF_SEL(&priv->adc_handle, 0xF);
 +
-+    /* Battery calibration point, one-point measured: raw 3627 @ 4020 mV
-+     * (LCKFB Huangshan Pi, measured with multimeter). */
-+    priv->vbat_reg = 3627;
-+    priv->vbat_mv = 4020;
++    /* Battery calibration point, one-point measured on CH_SEL=7: raw 2476
++     * @ 3970 mV (LCKFB Huangshan Pi, multimeter). */
++    priv->vbat_reg = 2476;
++    priv->vbat_mv = 3970;
 +
 +    syslog(LOG_INFO, "ADC CFG_REG1=0x%08lx LDOVREF_SEL=%lu VBAT cal=%u/%u\n",
 +           (unsigned long)priv->adc_handle.Instance->ADC_CFG_REG1,
@@ -63,3 +63,19 @@ index 4da8ae6..3fc27fc 100644
      if (adc_mv < 0)
      {
          adc_mv = 0;
+diff --git a/chips/sf32lb52/sf32lb_adc.h b/chips/sf32lb52/sf32lb_adc.h
+index ad6b006..d6f4d59 100644
+--- a/chips/sf32lb52/sf32lb_adc.h
++++ b/chips/sf32lb52/sf32lb_adc.h
+@@ -20,8 +20,9 @@
+ #define ADC_CHAN_6             6
+ #define ADC_CHAN_7             7
+ 
+-/* Internal VBAT channel on SF32LB5x family */
+-#define ADC_CHAN_VBAT          ADC_CHAN_5
++/* Internal VBAT channel on SF32LB5x family: CH_SEL=7 with EN_VBAT_MON
++ * selects the internal battery voltage sample point (see UM5201 GPADC). */
++#define ADC_CHAN_VBAT          ADC_CHAN_7
+ 
+ #define ADC_USE_AVERAGE        1
+ #if ADC_USE_AVERAGE
