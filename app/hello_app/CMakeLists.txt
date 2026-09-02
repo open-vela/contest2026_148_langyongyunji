@@ -88,6 +88,7 @@ if(CONFIG_LVX_USE_DEMO_CONTEST2026_148_VELAGUARD)
     algorithm/velaguard_fall.c
     audio/velaguard_audio.c
     audio/velaguard_audio_feedback.c
+    audio/velaguard_audio_task.c
     audio/velaguard_wav_parser.c
     sensors/velaguard_imu.c
     comm/velaguard_ble.c

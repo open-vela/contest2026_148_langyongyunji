@@ -31,6 +31,19 @@ config CONTEST2026_148_VELAGUARD_STACKSIZE
 	int "VelaGuard stack size"
 	default 32768
 
+config CONTEST2026_148_AUDIO_TASK_PRIORITY
+	int "VelaGuard audio task priority"
+	default 101
+	---help---
+		Priority of the dedicated audio task that owns MIC capture,
+		voice-keyword polling and feedback WAV playback.
+
+config CONTEST2026_148_AUDIO_TASK_STACKSIZE
+	int "VelaGuard audio task stack size"
+	default 16384
+	---help---
+		Stack size of the dedicated audio task.
+
 config CONTEST2026_148_VELAGUARD_INPUT_DEVPATH
 	string "Touchscreen device path"
 	default "/dev/input0"

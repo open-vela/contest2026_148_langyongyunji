@@ -13,6 +13,9 @@
  * through /dev/adc0 (ADC_CHAN_VBAT) inside the charge poll timer. */
 #define VG_BATTERY_PCT_ENABLED 1
 
+/* Timeout for waiting until the audio task reports MIC capture ready. */
+#define VG_AUDIO_READY_TIMEOUT_MS 3000
+
 /****************************************************************************
  * Included Files
  ****************************************************************************/
@@ -128,6 +131,7 @@ extern const lv_image_dsc_t velaguard_img_thumb_touch_future;
 #include "velaguard_ble.h"
 #include "velaguard_audio.h"
 #include "velaguard_audio_feedback.h"
+#include "velaguard_audio_task.h"
 
 LV_FONT_DECLARE(velaguard_font_30);
 
@@ -322,10 +326,6 @@ struct vg_app_s
   int imu_mag_mg;
   int imu_gyro_dps;
   int imu_last_error;
-  struct vg_audio_level_s audio_level;
-  enum vg_audio_keyword_e audio_keyword;
-  uint32_t audio_sequence;
-  uint32_t audio_report_tick;
   uint64_t voice_last_trigger_ms;
   uint64_t button_down_ms;
   uint64_t button_arm_release_ms;
@@ -339,9 +339,6 @@ struct vg_app_s
   uint64_t hold_confirm_start_ms;
   enum vg_action_e hold_action;
   int hold_last_value;
-  bool audio_ready;
-  bool audio_start_attempted;
-  bool audio_resume_after_feedback;
   uint32_t next_id;
   bool has_fall_result;
   bool imu_ready;
@@ -442,10 +439,6 @@ static void vg_update_bluetooth_page(bool force);
 static void vg_update_alarm_hold(void);
 static void vg_render_fall_hold_progress(enum vg_action_e action);
 static void vg_update_hold_progress_visuals(uint64_t now);
-static void vg_audio_process(void);
-static void vg_audio_start_once(void);
-static void vg_audio_feedback_start(enum vg_feedback_type_e type);
-static void vg_audio_resume_after_feedback(void);
 static void vg_ble_service_poll(void);
 
 /****************************************************************************
@@ -785,11 +778,11 @@ static void vg_confirm_alert(void)
 #ifdef CONFIG_CONTEST2026_148_AUDIO_FEEDBACK
     if (ble_ret == 0 || ble_ret == -ENOTCONN)
       {
-        vg_audio_feedback_start(VG_FEEDBACK_SUCCESS);
+        vg_audio_task_play_feedback(VG_FEEDBACK_SUCCESS);
       }
     else
       {
-        vg_audio_feedback_start(VG_FEEDBACK_FAILURE);
+        vg_audio_task_play_feedback(VG_FEEDBACK_FAILURE);
       }
 #endif
   }
@@ -824,11 +817,11 @@ static void vg_trigger_event(enum vg_event_type_e type)
 #ifdef CONFIG_CONTEST2026_148_AUDIO_FEEDBACK
         if (ble_ret == 0 || ble_ret == -ENOTCONN)
           {
-            vg_audio_feedback_start(VG_FEEDBACK_SUCCESS);
+            vg_audio_task_play_feedback(VG_FEEDBACK_SUCCESS);
           }
         else
           {
-            vg_audio_feedback_start(VG_FEEDBACK_FAILURE);
+            vg_audio_task_play_feedback(VG_FEEDBACK_FAILURE);
           }
 #endif
       }
@@ -3047,39 +3040,37 @@ static void vg_update_manual_sos_progress(uint64_t now)
   lv_arc_set_value(g_vg.countdown_arc, arc_value);
 }
 
-static void vg_audio_process(void)
+static void vg_audio_event_process(void)
 {
+  struct vg_audio_evt_s evt;
   uint64_t now;
 
-  if (!g_vg.audio_ready ||
-      !vg_audio_capture_level(&g_vg.audio_level, &g_vg.audio_sequence,
-                              &g_vg.audio_keyword))
-    {
-      return;
-    }
+  /* Audio execution now lives in the audio task; this loop only drains the
+   * events it reports.  Keyword detections keep the same gating that used
+   * to run next to the capture polling. */
 
-  now = vg_uptime_ms();
-  g_vg.audio_report_tick += 32;
-  if (g_vg.audio_report_tick >= 1000)
+  while (vg_audio_task_get_event(&evt))
     {
-      printf("VelaGuard MIC: seq=%lu dc=%ld mean=%lu peak=%u voice=%d\n",
-             (unsigned long)g_vg.audio_sequence,
-             (long)g_vg.audio_level.dc,
-             (unsigned long)g_vg.audio_level.mean_abs,
-             g_vg.audio_level.peak,
-             g_vg.audio_level.speech_active ? 1 : 0);
-      g_vg.audio_report_tick = 0;
-    }
+      if (evt.type != VG_AUDIO_EVT_KEYWORD)
+        {
+          continue;
+        }
 
-  if (g_vg.audio_keyword != VG_AUDIO_KEYWORD_NONE &&
-      g_vg.state == VG_STATE_GUARDING &&
-      (g_vg.voice_last_trigger_ms == 0 ||
-       now - g_vg.voice_last_trigger_ms >= VG_VOICE_REARM_MS))
-    {
+      if (g_vg.state != VG_STATE_GUARDING)
+        {
+          continue;
+        }
+
+      now = vg_uptime_ms();
+      if (g_vg.voice_last_trigger_ms != 0 &&
+          now - g_vg.voice_last_trigger_ms < VG_VOICE_REARM_MS)
+        {
+          continue;
+        }
+
       g_vg.voice_last_trigger_ms = now;
       printf("VelaGuard KWS: keyword=%s recognized\n",
-             g_vg.audio_keyword == VG_AUDIO_KEYWORD_JIUMING ?
-             "救命" : "求助");
+             evt.arg == VG_AUDIO_KEYWORD_JIUMING ? "救命" : "求助");
       vg_trigger_event(VG_EVENT_VOICE);
     }
 }
@@ -3104,101 +3095,14 @@ static int vg_wait_for_device(const char *path, unsigned int timeout_ms)
   return 0;
 }
 
-static void vg_audio_start_once(void)
-{
-#ifdef CONFIG_CONTEST2026_148_MIC_CAPTURE
-  if (g_vg.audio_start_attempted)
-    {
-      return;
-    }
-
-  g_vg.audio_start_attempted = true;
-  if (vg_audio_capture_start() == 0)
-    {
-      g_vg.audio_ready = true;
-      printf("VelaGuard audio: capture started before BLE bring-up\n");
-    }
-  else
-    {
-      printf("VelaGuard audio: microphone capture unavailable\n");
-    }
-#else
-  printf("VelaGuard audio: microphone capture disabled\n");
-#endif
-}
-
-static void vg_audio_feedback_start(enum vg_feedback_type_e type)
-{
-#ifdef CONFIG_CONTEST2026_148_AUDIO_FEEDBACK
-  if (vg_audio_feedback_active() || vg_audio_feedback_trigger(type) < 0)
-    {
-      return;
-    }
-
-  /* SF32LB52 uses one codec/DMA complex for ADC capture and DAC playback.
-   * Do not leave capture's message queue and DMA in flight while opening the
-   * playback stream.  Feedback is brief; capture resumes on completion. */
-  if (g_vg.audio_ready)
-    {
-      printf("VelaGuard audio: pause capture for feedback\n");
-      vg_audio_capture_stop();
-      g_vg.audio_ready = false;
-      g_vg.audio_resume_after_feedback = true;
-    }
-#else
-  (void)type;
-#endif
-}
-
-static void vg_audio_resume_after_feedback(void)
-{
-#if defined(CONFIG_CONTEST2026_148_AUDIO_FEEDBACK) && \
-    defined(CONFIG_CONTEST2026_148_MIC_CAPTURE)
-  if (!g_vg.audio_resume_after_feedback || vg_audio_feedback_active())
-    {
-      return;
-    }
-
-  g_vg.audio_resume_after_feedback = false;
-  if (vg_audio_capture_start() == 0)
-    {
-      g_vg.audio_ready = true;
-      printf("VelaGuard audio: capture resumed after feedback\n");
-    }
-  else
-    {
-      printf("VelaGuard audio: capture resume failed\n");
-    }
-#endif
-}
-
 static void vg_audio_headless_loop(void)
 {
-  unsigned int report_ms = 0;
-
   printf("VelaGuard: UI unavailable; audio diagnostics remain active.\n");
   for (; ; )
     {
       vg_ble_service_poll();
       vg_ble_process_time();
-      vg_audio_process();
-
-      if (g_vg.audio_ready &&
-          vg_audio_capture_level(&g_vg.audio_level, &g_vg.audio_sequence,
-                                 NULL))
-        {
-          report_ms += VG_DEVICE_WAIT_STEP_MS;
-          if (report_ms >= 1000)
-            {
-              printf("VelaGuard MIC: seq=%lu dc=%ld mean=%lu peak=%u voice=%d\n",
-                     (unsigned long)g_vg.audio_sequence,
-                     (long)g_vg.audio_level.dc,
-                     (unsigned long)g_vg.audio_level.mean_abs,
-                     g_vg.audio_level.peak,
-                     g_vg.audio_level.speech_active ? 1 : 0);
-              report_ms = 0;
-            }
-        }
+      vg_audio_event_process();
 
       usleep(VG_DEVICE_WAIT_STEP_MS * 1000);
     }
@@ -3255,9 +3159,22 @@ int main(int argc, FAR char *argv[])
     VG_DEVICE_WAIT_MS) == 0;
 #endif
 
-  /* Complete the audio DMA setup before Bluetooth begins ATT/GATT work.
-   * The audio capture path is non-blocking after this point. */
-  vg_audio_start_once();
+  /* Audio execution runs in its own task.  Create it before Bluetooth
+   * bring-up; when MIC capture is enabled, wait until the capture pipeline
+   * is up so the audio DMA setup stays ahead of BLE ATT/GATT work. */
+#if defined(CONFIG_CONTEST2026_148_MIC_CAPTURE) || \
+    defined(CONFIG_CONTEST2026_148_AUDIO_FEEDBACK)
+  vg_audio_task_start();
+#endif
+#ifdef CONFIG_CONTEST2026_148_MIC_CAPTURE
+  vg_audio_task_send_cmd(VG_AUDIO_CMD_START_MIC, 0);
+  ret = vg_audio_task_wait_capture_ready(VG_AUDIO_READY_TIMEOUT_MS);
+  if (ret < 0)
+    {
+      printf("VelaGuard audio: capture not ready (ret=%d); continuing\n",
+             ret);
+    }
+#endif
 
   /* Keep Framework/H4 ownership and initialization ahead of LVGL.  Retrying
    * bluetooth_create_instance() from the UI loop can create a second client
@@ -3358,16 +3275,12 @@ int main(int argc, FAR char *argv[])
 
   for (; ; )
     {
-      /* Audio capture has already been initialized before BLE; the loop only
-       * polls its non-blocking message queue after advancing BLE state. */
       vg_ble_service_poll();
       vg_ble_process_time();
 
-      vg_audio_process();
-#ifdef CONFIG_CONTEST2026_148_AUDIO_FEEDBACK
-      vg_audio_feedback_process();
-      vg_audio_resume_after_feedback();
-#endif
+      /* Audio work lives in the audio task; this loop only drains the
+       * events it reports (e.g. voice-SOS keyword detections). */
+      vg_audio_event_process();
 
       uint32_t idle = lv_timer_handler();
 
