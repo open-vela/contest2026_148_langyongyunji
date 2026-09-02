@@ -271,12 +271,13 @@ CONFIG_LVX_USE_DEMO_CONTEST2026_148_VELAGUARD=y
 # CONFIG_CONTEST2026_148_AUDIO_TEST is not set
 # SOS WAV speaker feedback remains enabled for the current product flow.
 CONFIG_CONTEST2026_148_AUDIO_FEEDBACK=y
-# The current validation does not use voice SOS.  Keep ADC capture off so
-# playback owns the SF32LB52 audio DMA/codec without a concurrent stream.
-# CONFIG_CONTEST2026_148_MIC_CAPTURE is not set
-# Speex preprocessing allocates a large filterbank after audio DMA starts.
-# Keep capture raw while BLE/UI stability is being validated.
-# CONFIG_CONTEST2026_148_DENOISE is not set
+# MIC capture runs in the dedicated audio task; it pauses while feedback
+# WAV playback owns the SF32LB52 audio DMA/codec.
+CONFIG_CONTEST2026_148_MIC_CAPTURE=y
+# Noise suppression for the MIC stream.  The speexdsp filterbank is
+# allocated before the audio DMA starts (see velaguard_audio.c), which
+# avoids the heap corruption seen when allocating after DMA start.
+CONFIG_CONTEST2026_148_DENOISE=y
 CONFIG_AUDIO=y
 CONFIG_AUDIO_FORMAT_PCM=y
 CONFIG_CONTEST2026_148_VELAGUARD_STACKSIZE=65536

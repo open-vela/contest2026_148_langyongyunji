@@ -4,7 +4,7 @@
  * Uses the NuttX standard audio interface to capture from the SiFli
  * lower-half driver (sf32lb_audio.c) at 16 kHz mono 16-bit PCM via
  * /dev/audio/pcm0c.  Buffers are delivered asynchronously through a POSIX
- * message queue and polled non-blocking in the main loop.
+ * message queue and polled non-blocking by the audio task.
  ****************************************************************************/
 
 #include "velaguard_audio.h"
@@ -35,6 +35,11 @@
  */
 
 #define REC_CAPTURE_GAIN         967     /* +27 dB */
+
+/* Denoise preprocessor frame length (16 ms at 16 kHz); must match the
+ * frame size used by vg_denoise_run(). */
+
+#define VG_DENOISE_FRAME_SAMPLES 256
 
 static int g_vg_audio_fd = -1;
 static mqd_t g_vg_audio_mq = -1;
@@ -235,6 +240,18 @@ int vg_audio_capture_start(void)
         }
     }
 
+#ifdef CONFIG_CONTEST2026_148_DENOISE
+  /* Create the noise-suppression state before the DMA stream starts.
+   * Speex filterbank allocation corrupts this board's heap once the audio
+   * DMA is running, so allocate it first (audio_test uses the same
+   * ordering).  On failure capture continues raw. */
+  g_vg_denoise = vg_denoise_create(SAMPLE_RATE, VG_DENOISE_FRAME_SAMPLES);
+  if (g_vg_denoise == NULL)
+    {
+      printf("VelaGuard audio: denoise unavailable; capture stays raw\n");
+    }
+#endif
+
   /* Start capture. */
 
   if (ioctl(g_vg_audio_fd, AUDIOIOC_START, 0) < 0)
@@ -246,16 +263,15 @@ int vg_audio_capture_start(void)
   g_vg_audio_sequence = 0;
   g_vg_audio_started = true;
 
-  /* Speex filterbank allocation corrupts the process heap on this board
-   * after audio DMA starts.  Preserve raw capture and analysis while the
-   * lower-level audio allocator issue is isolated. */
-
-  g_vg_denoise = NULL;
-
-  printf("VelaGuard audio: MIC 16kHz/16-bit capture started\n");
+  printf("VelaGuard audio: MIC 16kHz/16-bit capture started%s\n",
+         g_vg_denoise != NULL ? " (denoise on)" : "");
   return 0;
 
 err_unreg_mq:
+#ifdef CONFIG_CONTEST2026_148_DENOISE
+  vg_denoise_destroy(g_vg_denoise);
+  g_vg_denoise = NULL;
+#endif
   ioctl(g_vg_audio_fd, AUDIOIOC_UNREGISTERMQ,
         (unsigned long)g_vg_audio_mq);
   mq_close(g_vg_audio_mq);
