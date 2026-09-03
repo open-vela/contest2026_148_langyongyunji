@@ -2293,11 +2293,11 @@ static void vg_render_alert(void)
                        VG_COLOR_TEXT);
       lv_obj_align(label, LV_ALIGN_TOP_LEFT, VG_X(198), VG_Y(109));
 
-      vg_hold_button(root, "我没事\n长按", VG_X(21), VG_Y(211),
+      vg_hold_button(root, "没事\n长按", VG_X(21), VG_Y(211),
                      VG_X(90), VG_Y(54),
                      0xd79500, VG_COLOR_TEXT,
                      VG_ACTION_FALL_CANCEL_HOLD);
-      vg_hold_button(root, "立即求助\n长按", VG_X(129), VG_Y(211),
+      vg_hold_button(root, "求助\n长按", VG_X(129), VG_Y(211),
                      VG_X(90), VG_Y(54),
                      0xff4b22, VG_COLOR_TEXT,
                      VG_ACTION_FALL_CONFIRM_HOLD);
