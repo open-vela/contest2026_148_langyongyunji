@@ -425,8 +425,6 @@ if __name__ == "__main__":
     "icon_rainbow_rain_white_8.png",
     "icon_rainbow_rain_white_9.png",
     ]
-    write_lvgl_image("velaguard_img_icon_rainbow_rain_bg",
-                     scale_watch_image(find("icon_rainbow_rain_bg_meteor_sharp.png")))
     for name in rainbow_assets:
         path = find(name)
         write_lvgl_image(symbol(path), scale_watch_image(path))

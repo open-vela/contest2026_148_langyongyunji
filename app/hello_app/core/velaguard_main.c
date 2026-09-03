@@ -62,7 +62,6 @@ extern const lv_image_dsc_t velaguard_img_count_6;
 extern const lv_image_dsc_t velaguard_img_count_7;
 extern const lv_image_dsc_t velaguard_img_count_8;
 extern const lv_image_dsc_t velaguard_img_count_9;
-extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_bg;
 extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_battery_5;
 extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_white_0;
 extern const lv_image_dsc_t velaguard_img_icon_rainbow_rain_white_1;
@@ -1123,6 +1122,57 @@ static lv_obj_t *vg_image_at(lv_obj_t *parent,
   return img;
 }
 
+static void vg_create_rainbow_background(lv_obj_t *parent)
+{
+  static const uint32_t arc_colors[] =
+  {
+    0x227ea8,
+    0x3fbf99,
+    0xe7af3c,
+  };
+  int i;
+
+  lv_obj_set_style_bg_color(parent, lv_color_hex(0x091420), LV_PART_MAIN);
+  lv_obj_set_style_bg_opa(parent, LV_OPA_COVER, LV_PART_MAIN);
+
+  for (i = 0; i < (int)(sizeof(arc_colors) / sizeof(arc_colors[0])); i++)
+    {
+      lv_obj_t *arc = lv_arc_create(parent);
+      int32_t size = VG_X(252 - i * 26);
+
+      lv_obj_set_size(arc, size, size);
+      lv_obj_align(arc, LV_ALIGN_TOP_RIGHT, VG_X(48 + i * 8),
+                   -VG_Y(72 + i * 9));
+      lv_arc_set_range(arc, 0, 100);
+      lv_arc_set_value(arc, 100);
+      lv_arc_set_bg_angles(arc, 130, 315);
+      lv_arc_set_rotation(arc, 0);
+      lv_obj_remove_style(arc, NULL, LV_PART_KNOB);
+      lv_obj_clear_flag(arc, LV_OBJ_FLAG_CLICKABLE);
+      lv_obj_set_style_arc_width(arc, VG_X(8), LV_PART_INDICATOR);
+      lv_obj_set_style_arc_color(arc, lv_color_hex(arc_colors[i]),
+                                 LV_PART_INDICATOR);
+      lv_obj_set_style_arc_opa(arc, LV_OPA_COVER, LV_PART_INDICATOR);
+      lv_obj_set_style_arc_width(arc, 0, LV_PART_MAIN);
+    }
+
+  for (i = 0; i < 6; i++)
+    {
+      lv_obj_t *drop = lv_obj_create(parent);
+      int32_t y = VG_Y(20 + (i % 3) * 16);
+
+      lv_obj_set_size(drop, VG_X(5), VG_Y(13 + (i % 2) * 5));
+      lv_obj_align(drop, LV_ALIGN_TOP_LEFT, VG_X(24 + i * 33),
+                   y);
+      lv_obj_set_style_bg_color(drop, lv_color_hex(0x82d6ef), LV_PART_MAIN);
+      lv_obj_set_style_bg_opa(drop, LV_OPA_70, LV_PART_MAIN);
+      lv_obj_set_style_radius(drop, VG_X(12), LV_PART_MAIN);
+      lv_obj_set_style_border_width(drop, 0, LV_PART_MAIN);
+      lv_obj_clear_flag(drop, LV_OBJ_FLAG_SCROLLABLE);
+      lv_obj_clear_flag(drop, LV_OBJ_FLAG_CLICKABLE);
+    }
+}
+
 /****************************************************************************
  * Name: vg_battery_pct_label_create
  *
@@ -1388,6 +1438,7 @@ static lv_obj_t *vg_action_button(lv_obj_t *parent, const char *text,
 static void vg_nav_request(enum vg_page_e target, lv_dir_t dir,
                            const char *source)
 {
+  UNUSED(dir);
   UNUSED(source);
 
   if (g_vg.navigating || g_vg.gesture_consumed ||
@@ -1507,27 +1558,41 @@ static lv_obj_t *vg_action_button(lv_obj_t *parent, const char *text,
                                   int32_t h, uint32_t color,
                                   enum vg_action_e action)
 {
-  lv_obj_t *btn = lv_button_create(parent);
-  lv_obj_t *label;
+  bool is_card = text[0] == '\0';
+  lv_obj_t *btn = is_card ? lv_obj_create(parent) : lv_button_create(parent);
 
   lv_obj_set_size(btn, w, h);
   lv_obj_align(btn, LV_ALIGN_TOP_LEFT, x, y);
   lv_obj_set_style_bg_color(btn, lv_color_hex(color), LV_PART_MAIN);
-  lv_obj_set_style_radius(btn, 8, LV_PART_MAIN);
+  lv_obj_set_style_radius(btn, is_card ? 8 : h / 2, LV_PART_MAIN);
   lv_obj_set_style_border_width(btn, 0, LV_PART_MAIN);
+  lv_obj_clear_flag(btn, LV_OBJ_FLAG_SCROLLABLE);
+  if (!is_card)
+    {
+      lv_obj_set_style_pad_hor(btn, h / 3, LV_PART_MAIN);
+    }
+  else
+    {
+      lv_obj_add_flag(btn, LV_OBJ_FLAG_CLICKABLE);
+    }
+
   vg_set_font(btn);
   lv_obj_add_event_cb(btn, vg_action_cb, LV_EVENT_CLICKED,
                       (void *)(uintptr_t)action);
 
-  label = lv_label_create(btn);
-  vg_set_font(label);
-  lv_label_set_text(label, text);
-  lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
-  lv_obj_set_width(label, w - 8);
-  lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
-  lv_obj_set_style_text_color(label, lv_color_hex(VG_COLOR_TEXT),
-                              LV_PART_MAIN);
-  lv_obj_center(label);
+  if (!is_card)
+    {
+      lv_obj_t *label = lv_label_create(btn);
+
+      vg_set_font(label);
+      lv_label_set_text(label, text);
+      lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+      lv_obj_set_width(label, w - h);
+      lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
+      lv_obj_set_style_text_color(label, lv_color_hex(VG_COLOR_TEXT),
+                                  LV_PART_MAIN);
+      lv_obj_center(label);
+    }
 
   return btn;
 }
@@ -1620,8 +1685,9 @@ static lv_obj_t *vg_hold_button(lv_obj_t *parent, const char *text,
   lv_obj_set_size(btn, w, h);
   lv_obj_align(btn, LV_ALIGN_TOP_LEFT, x, y);
   lv_obj_set_style_bg_color(btn, lv_color_hex(bg), LV_PART_MAIN);
-  lv_obj_set_style_radius(btn, 2, LV_PART_MAIN);
+  lv_obj_set_style_radius(btn, h / 2, LV_PART_MAIN);
   lv_obj_set_style_border_width(btn, 0, LV_PART_MAIN);
+  lv_obj_set_style_pad_hor(btn, VG_X(4), LV_PART_MAIN);
   lv_obj_add_event_cb(btn, vg_hold_button_cb, LV_EVENT_PRESSED,
                       (void *)(uintptr_t)action);
   lv_obj_add_event_cb(btn, vg_hold_button_cb, LV_EVENT_RELEASED,
@@ -1630,10 +1696,12 @@ static lv_obj_t *vg_hold_button(lv_obj_t *parent, const char *text,
                       (void *)(uintptr_t)action);
 
   label = lv_label_create(btn);
-  vg_set_font(label);
+  /* Hold actions have a fixed two-line label.  The normal UI font is too
+   * wide for "立即求助" in a 90 px pill and used to wrap into three lines. */
+  lv_obj_set_style_text_font(label, LV_FONT_DEFAULT, LV_PART_MAIN);
   lv_label_set_text(label, text);
-  lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
-  lv_obj_set_width(label, w - 8);
+  lv_label_set_long_mode(label, LV_LABEL_LONG_CLIP);
+  lv_obj_set_width(label, w - VG_X(12));
   lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, LV_PART_MAIN);
   lv_obj_set_style_text_color(label, lv_color_hex(fg), LV_PART_MAIN);
   lv_obj_center(label);
@@ -2085,7 +2153,7 @@ static void vg_render_home(void)
 #else
   if (g_vg.watchface == 0)
     {
-      vg_image_at(root, &velaguard_img_icon_rainbow_rain_bg, 0, 0);
+      vg_create_rainbow_background(root);
       g_vg.home_time_img[0] = vg_image_at(root,
         &velaguard_img_icon_rainbow_rain_white_0, VG_X(64), VG_Y(49));
       g_vg.home_time_img[1] = vg_image_at(root,

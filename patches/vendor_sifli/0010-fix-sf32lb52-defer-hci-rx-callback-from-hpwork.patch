@@ -1,0 +1,33 @@
+diff --git a/chips/sf32lb52/sf32lb52_bt_adapter.c b/chips/sf32lb52/sf32lb52_bt_adapter.c
+--- a/chips/sf32lb52/sf32lb52_bt_adapter.c
++++ b/chips/sf32lb52/sf32lb52_bt_adapter.c
+@@ -603,7 +603,10 @@ static int32_t sf32lb52_bt_rx_ind(ipc_queue_handle_t handle, size_t size)
+     {
+       int ret;
+ 
+-      ret = work_queue(HPWORK, &env->rx_work, sf32lb52_bt_rx_worker,
++      /* The mailbox ISR only schedules the HCI receive bottom half.  Packet
++       * parsing and notify_host() may sleep or enter the Bluetooth host, so
++       * they must not run on the high-priority interrupt work queue. */
++      ret = work_queue(LPWORK, &env->rx_work, sf32lb52_bt_rx_worker,
+                        env, 0);
+       if (ret < 0)
+         {
+@@ -684,7 +687,7 @@ int sf32lb52_bt_controller_deinit(void)
+   g_sf32lb52_bt_env.rx_worker_running = false;
+   if (!work_available(&g_sf32lb52_bt_env.rx_work))
+     {
+-      ret = work_cancel_sync(HPWORK, &g_sf32lb52_bt_env.rx_work);
++      ret = work_cancel_sync(LPWORK, &g_sf32lb52_bt_env.rx_work);
+       if (ret < 0 && ret != -ENOENT)
+         {
+           return ret;
+@@ -848,7 +851,7 @@ int sf32lb52_bt_controller_disable(void)
+   g_sf32lb52_bt_env.rx_worker_running = false;
+   if (!work_available(&g_sf32lb52_bt_env.rx_work))
+     {
+-      tmpret = work_cancel_sync(HPWORK, &g_sf32lb52_bt_env.rx_work);
++      tmpret = work_cancel_sync(LPWORK, &g_sf32lb52_bt_env.rx_work);
+       if (tmpret < 0 && tmpret != -ENOENT && ret == OK)
+         {
+           ret = tmpret;
