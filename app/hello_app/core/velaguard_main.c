@@ -3005,17 +3005,12 @@ int main(int argc, FAR char *argv[])
   vg_audio_task_start();
 #endif
 #ifdef CONFIG_CONTEST2026_148_MIC_CAPTURE
-  /* TEMP-DIAG: MIC capture disabled at boot to measure audio-task CPU
-   * without the denoise/KWS load.  Re-enable by uncommenting below. */
-  if (false)
+  vg_audio_task_send_cmd(VG_AUDIO_CMD_START_MIC, 0);
+  ret = vg_audio_task_wait_capture_ready(VG_AUDIO_READY_TIMEOUT_MS);
+  if (ret < 0)
     {
-      vg_audio_task_send_cmd(VG_AUDIO_CMD_START_MIC, 0);
-      ret = vg_audio_task_wait_capture_ready(VG_AUDIO_READY_TIMEOUT_MS);
-      if (ret < 0)
-        {
-          printf("VelaGuard audio: capture not ready (ret=%d); continuing\n",
-                 ret);
-        }
+      printf("VelaGuard audio: capture not ready (ret=%d); continuing\n",
+             ret);
     }
 #endif
 
